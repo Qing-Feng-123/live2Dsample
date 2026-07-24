@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Live2D Haru - 交互演示</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif; }
+    body {
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 40%, #0f3460 70%, #1a1a2e 100%);
+      background-size: 400% 400%;
+      animation: gradientShift 15s ease infinite;
+    }
+    @keyframes gradientShift {
+      0% { background-position: 0% 50%; }
+      50% { background-position: 100% 50%; }
+      100% { background-position: 0% 50%; }
+    }
+
+    #canvas-container {
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      display: flex; align-items: center; justify-content: center;
+    }
+    canvas { display: block; cursor: grab; }
+    canvas:active { cursor: grabbing; }
+
+    /* 粒子背景 */
+    .particles {
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      pointer-events: none; z-index: 0;
+    }
+    .particle {
+      position: absolute;
+      background: rgba(255,255,255,0.12);
+      border-radius: 50%;
+      animation: floatUp linear infinite;
+    }
+    @keyframes floatUp {
+      0% { transform: translateY(100vh) scale(0); opacity: 0; }
+      10% { opacity: 1; }
+      90% { opacity: 1; }
+      100% { transform: translateY(-10vh) scale(1); opacity: 0; }
+    }
+
+    /* 控制面板 */
+    #control-panel {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      z-index: 10; display: flex; gap: 14px; flex-wrap: wrap; justify-content: center;
+      padding: 0 20px;
+    }
+    .btn-group {
+      background: rgba(20, 20, 50, 0.7);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 20px; padding: 10px 14px;
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .btn-label {
+      font-size: 10px; color: rgba(255,255,255,0.45); text-align: center;
+      letter-spacing: 2px; text-transform: uppercase;
+    }
+    .btn-row {
+      display: flex; gap: 6px; flex-wrap: wrap; justify-content: center;
+    }
+    .btn {
+      padding: 9px 16px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.15);
+      background: rgba(255,255,255,0.05); color: #ccc;
+      font-size: 13px; cursor: pointer; transition: all 0.25s;
+      backdrop-filter: blur(10px); white-space: nowrap;
+      font-family: inherit; user-select: none;
+    }
+    .btn:hover {
+      background: rgba(255,255,255,0.14); border-color: rgba(255,255,255,0.35);
+      transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,0.3);
+      color: #fff;
+    }
+    .btn:active { transform: scale(0.95); }
+    .btn.active {
+      background: rgba(100, 160, 255, 0.3); border-color: rgba(100, 160, 255, 0.5);
+      color: #fff; box-shadow: 0 0 18px rgba(100, 160, 255, 0.25);
+    }
+    .btn.expr-btn {
+      border-color: rgba(255, 140, 180, 0.25);
+    }
+    .btn.expr-btn:hover {
+      background: rgba(255, 140, 180, 0.2);
+    }
+
+    /* 提示 */
+    #hint {
+      position: fixed; top: 28px; left: 50%; transform: translateX(-50%);
+      z-index: 10; color: rgba(255,255,255,0.55); font-size: 14px;
+      text-align: center; pointer-events: none;
+      transition: opacity 0.8s;
+    }
+    .hint-arrow { display: inline-block; animation: bounce 1.5s infinite; }
+    @keyframes bounce {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-6px); }
+    }
+
+    /* 加载 */
+    #loading {
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      z-index: 100; background: rgba(8, 8, 25, 0.97);
+      transition: opacity 0.6s; color: #fff;
+    }
+    #loading.hidden { opacity: 0; pointer-events: none; }
+    .spinner {
+      width: 44px; height: 44px; border: 3px solid rgba(255,255,255,0.12);
+      border-top-color: #64b5f6; border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin-bottom: 20px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #loading-text { font-size: 15px; color: rgba(255,255,255,0.65); }
+    #loading-progress {
+      width: 220px; height: 3px; background: rgba(255,255,255,0.08);
+      border-radius: 3px; margin-top: 14px; overflow: hidden;
+    }
+    #loading-progress-bar {
+      height: 100%; background: linear-gradient(90deg, #64b5f6, #e040fb);
+      border-radius: 3px; transition: width 0.4s ease;
+    }
+
+    /* 键盘提示 */
+    #keyboard-hint {
+      position: fixed; top: 70px; left: 50%; transform: translateX(-50%);
+      z-index: 10; color: rgba(255,255,255,0.3); font-size: 11px;
+      text-align: center; pointer-events: none; transition: opacity 0.8s;
+    }
+
+    @media (max-width: 768px) {
+      .btn { padding: 7px 12px; font-size: 11px; border-radius: 10px; }
+      .btn-group { border-radius: 14px; padding: 8px 10px; gap: 4px; }
+      #control-panel { bottom: 14px; gap: 10px; }
+      #hint { top: 16px; font-size: 12px; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- 粒子背景 -->
+  <div class="particles" id="particles"></div>
+
+  <!-- 加载画面 -->
+  <div id="loading">
+    <div class="spinner"></div>
+    <div id="loading-text">正在加载 Haru...</div>
+    <div id="loading-progress"><div id="loading-progress-bar" style="width: 0%"></div></div>
+  </div>
+
+  <!-- 3D模型画布 -->
+  <div id="canvas-container">
+    <canvas id="live2d-canvas"></canvas>
+  </div>
+
+  <!-- 提示 -->
+  <div id="hint">
+    <span class="hint-arrow">👆</span> 拖拽鼠标让 Haru 注视你 · 点击触发互动
+  </div>
+  <div id="keyboard-hint">
+    键盘: 1-5 动作 · N/S/A/D/W/B 表情切换
+  </div>
+
+  <!-- 控制面板 -->
+  <div id="control-panel">
+    <div class="btn-group" id="expression-btns">
+      <div class="btn-label">表情 Expressions</div>
+      <div class="btn-row">
+        <button class="btn expr-btn active" data-expression="normal">😊 普通</button>
+        <button class="btn expr-btn" data-expression="smile">😄 微笑</button>
+        <button class="btn expr-btn" data-expression="angry">😠 生气</button>
+        <button class="btn expr-btn" data-expression="sad">😢 悲伤</button>
+        <button class="btn expr-btn" data-expression="surprised">😲 惊讶</button>
+        <button class="btn expr-btn" data-expression="blushing">😳 害羞</button>
+      </div>
+    </div>
+    <div class="btn-group" id="motion-btns">
+      <div class="btn-label">动作 Motions</div>
+      <div class="btn-row">
+        <button class="btn" data-motion="Tap">👆 点击</button>
+        <button class="btn" data-motion="Flick">👆 滑动</button>
+        <button class="btn" data-motion="FlickRight">👉 右滑</button>
+        <button class="btn" data-motion="FlickLeft">👈 左滑</button>
+        <button class="btn" data-motion="Shake">🫨 摇晃</button>
+        <button class="btn" id="btn-idle">🎬 待机</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 依赖库 -->
+  <script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/pixi.js@7.3.3/dist/pixi.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/pixi-live2d-display@0.5.0/dist/index.min.js"></script>
+
+  <script>
+  // ============ 粒子背景 ============
+  (() => {
+    const container = document.getElementById('particles');
+    for (let i = 0; i < 35; i++) {
+      const p = document.createElement('div');
+      p.className = 'particle';
+      const size = Math.random() * 4 + 2;
+      Object.assign(p.style, {
+        width: size + 'px', height: size + 'px',
+        left: Math.random() * 100 + '%',
+        animationDuration: (Math.random() * 10 + 8) + 's',
+        animationDelay: Math.random() * 10 + 's',
+        opacity: Math.random() * 0.4 + 0.08
+      });
+      container.appendChild(p);
+    }
+  })();
+
+  // ============ Live2D 模型加载 ============
+  const MODEL_BASE = 'https://raw.githubusercontent.com/Qing-Feng-123/live2Dsample/demo2/runtime/';
+  const MODEL_CONFIG = MODEL_BASE + 'haru.model3.json';
+
+  const canvas = document.getElementById('live2d-canvas');
+  const loadingEl = document.getElementById('loading');
+  const loadingText = document.getElementById('loading-text');
+  const progressBar = document.getElementById('loading-progress-bar');
+
+  let app;
+  let live2dModel;
+  let currentExpression = 'normal';
+
+  // 表情参数映射
+  const expressionParams = {
+    normal: {},
+    smile: { ParamMouthForm: 1, ParamEyeLSmile: 1, ParamEyeRSmile: 1 },
+    angry: { ParamBrowLY: -1, ParamBrowRY: -1, ParamBrowLForm: 1, ParamBrowRForm: 1, ParamMouthForm: -0.5 },
+    sad: { ParamBrowLY: 0.6, ParamBrowRY: 0.6, ParamEyeForm: -0.5, ParamMouthForm: -0.3 },
+    surprised: { ParamBrowLY: -0.8, ParamBrowRY: -0.8, ParamEyeForm: 0.6, ParamMouthOpenY: 0.5 },
+    blushing: { ParamTere: 1 }
+  };
+
+  async function init() {
+    try {
+      loadingText.textContent = '正在初始化渲染器...';
+      progressBar.style.width = '15%';
+
+      // 创建 PIXI 应用
+      app = new PIXI.Application({
+        view: canvas,
+        resizeTo: window,
+        backgroundAlpha: 0,
+        antialias: true,
+        resolution: Math.min(window.devicePixelRatio || 1, 2),
+        autoDensity: true,
+      });
+
+      progressBar.style.width = '30%';
+      loadingText.textContent = '正在从 GitHub 加载模型...';
+
+      // 加载 Live2D 模型
+      live2dModel = await PIXI.live2d.Live2DModel.from(MODEL_CONFIG, {
+        onProgress: (loader, resource) => {
+          if (loader && loader.progress) {
+            const pct = 30 + Math.floor(loader.progress * 0.6);
+            progressBar.style.width = pct + '%';
+          }
+        }
+      });
+
+      progressBar.style.width = '90%';
+      loadingText.textContent = '正在配置模型...';
+
+      // 设置模型位置和缩放
+      live2dModel.anchor.set(0.5, 0.5);
+      live2dModel.scale.set(0.28);
+      live2dModel.x = app.screen.width / 2;
+      live2dModel.y = app.screen.height / 2;
+
+      // 添加交互
+      live2dModel.interactive = true;
+      live2dModel.buttonMode = true;
+
+      app.stage.addChild(live2dModel);
+
+      // 初始化参数
+      setupModelParameters();
+
+      progressBar.style.width = '100%';
+      loadingText.textContent = '初始化完成!';
+
+      setTimeout(() => {
+        loadingEl.classList.add('hidden');
+        // 自动隐藏提示
+        setTimeout(() => {
+          document.getElementById('hint').style.opacity = '0';
+          document.getElementById('keyboard-hint').style.opacity = '0';
+        }, 10000);
+      }, 600);
+
+      // 开始渲染循环
+      app.ticker.add(() => updateModel());
+
+    } catch (e) {
+      console.error('初始化失败:', e);
+      loadingText.textContent = '加载失败: ' + (e.message || '未知错误');
+      loadingText.style.color = '#ff6b6b';
+    }
+  }
+
+  // ============ 模型参数控制 ============
+  let targetAngleX = 0, targetAngleY = 0, targetAngleZ = 0;
+  let currentAngleX = 0, currentAngleY = 0, currentAngleZ = 0;
+  let mouseX = 0, mouseY = 0;
+  let breathTime = 0;
+  let blinkTimer = 0;
+  let motionStartTime = 0;
+  let activeMotion = null;
+  let motionDuration = 0;
+
+  function setupModelParameters() {
+    if (!live2dModel) return;
+
+    // 鼠标移动追踪
+    const stage = app.stage;
+    stage.interactive = true;
+    stage.hitArea = new PIXI.Rectangle(0, 0, app.screen.width, app.screen.height);
+
+    stage.on('mousemove', (e) => {
+      const pos = e.data.global;
+      mouseX = (pos.x / app.screen.width) * 2 - 1;
+      mouseY = -(pos.y / app.screen.height) * 2 + 1;
+      targetAngleX = mouseX * 30;
+      targetAngleY = mouseY * 30;
+      targetAngleZ = mouseX * 20;
+    });
+
+    stage.on('mouseleave', () => {
+      targetAngleX = 0; targetAngleY = 0; targetAngleZ = 0;
+    });
+
+    // 触摸支持
+    stage.on('touchmove', (e) => {
+      const pos = e.data.global;
+      mouseX = (pos.x / app.screen.width) * 2 - 1;
+      mouseY = -(pos.y / app.screen.height) * 2 + 1;
+      targetAngleX = mouseX * 30;
+      targetAngleY = mouseY * 30;
+      targetAngleZ = mouseX * 20;
+    });
+
+    // 点击触发动作
+    stage.on('click', (e) => {
+      const pos = e.data.global;
+      const xRatio = pos.x / app.screen.width;
+      if (xRatio < 0.33) playMotion('FlickLeft');
+      else if (xRatio > 0.67) playMotion('FlickRight');
+      else playMotion('Tap');
+    });
+
+    stage.on('tap', (e) => {
+      const pos = e.data.global;
+      const xRatio = pos.x / app.screen.width;
+      if (xRatio < 0.33) playMotion('FlickLeft');
+      else if (xRatio > 0.67) playMotion('FlickRight');
+      else playMotion('Tap');
+    });
+  }
+
+  function updateModel() {
+    if (!live2dModel) return;
+
+    const dt = app.ticker.deltaMS / 1000;
+    breathTime += dt;
+    blinkTimer += dt;
+
+    // 平滑角度过渡
+    const lerpSpeed = 0.08;
+    currentAngleX += (targetAngleX - currentAngleX) * lerpSpeed;
+    currentAngleY += (targetAngleY - currentAngleY) * lerpSpeed;
+    currentAngleZ += (targetAngleZ - currentAngleZ) * lerpSpeed;
+
+    // 设置头部角度参数
+    const internalModel = live2dModel.internalModel;
+    if (internalModel && internalModel.coreModel) {
+      const core = internalModel.coreModel;
+
+      // 角度参数
+      trySetParam('ParamAngleX', currentAngleX);
+      trySetParam('ParamAngleY', currentAngleY);
+      trySetParam('ParamAngleZ', currentAngleZ);
+      trySetParam('ParamBodyAngleX', currentAngleX * 0.5);
+      trySetParam('ParamBodyAngleZ', currentAngleZ * 0.5);
+
+      // 自动眨眼
+      if (blinkTimer > 3.5 + Math.random() * 0.5) {
+        blinkTimer = 0;
+      }
+      let eyeOpen = 1;
+      if (blinkTimer < 0.1) {
+        eyeOpen = 1 - (blinkTimer / 0.1);
+      } else if (blinkTimer < 0.2) {
+        eyeOpen = (blinkTimer - 0.1) / 0.1;
+      }
+      trySetParam('ParamEyeLOpen', eyeOpen);
+      trySetParam('ParamEyeROpen', eyeOpen);
+
+      // 呼吸
+      trySetParam('ParamBreath', Math.sin(breathTime * 1.5) * 0.5 + 0.5);
+
+      // 眼球跟随鼠标
+      trySetParam('ParamEyeBallX', mouseX * 0.5);
+      trySetParam('ParamEyeBallY', mouseY * 0.5);
+
+      // 应用当前表情
+      applyExpressionParams();
+    }
+
+    // 更新模型位置 (居中)
+    live2dModel.x = app.screen.width / 2;
+    live2dModel.y = app.screen.height / 2;
+  }
+
+  function trySetParam(id, value) {
+    try {
+      const internalModel = live2dModel.internalModel;
+      if (internalModel && internalModel.coreModel) {
+        internalModel.coreModel.setParameterValueById(id, value);
+      }
+    } catch (e) {
+      // 参数不存在时静默忽略
+    }
+  }
+
+  function applyExpressionParams() {
+    const params = expressionParams[currentExpression] || {};
+    for (const [id, value] of Object.entries(params)) {
+      trySetParam(id, value);
+    }
+  }
+
+  // ============ 动作播放 ============
+  function playMotion(motionGroup) {
+    if (!live2dModel) return;
+
+    try {
+      live2dModel.motion(motionGroup, undefined, PIXI.live2d.MotionPriority.FORCE);
+
+      // 按钮高亮
+      document.querySelectorAll('.btn[data-motion]').forEach(b => b.classList.remove('active'));
+      const btn = document.querySelector(`.btn[data-motion="${motionGroup}"]`);
+      if (btn) {
+        btn.classList.add('active');
+        setTimeout(() => btn.classList.remove('active'), 800);
+      }
+    } catch (e) {
+      console.warn('动作播放失败:', motionGroup, e);
+    }
+  }
+
+  // ============ 按钮事件 ============
+  document.querySelectorAll('.btn.expr-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      currentExpression = btn.dataset.expression;
+      document.querySelectorAll('.btn.expr-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+    });
+  });
+
+  document.querySelectorAll('.btn[data-motion]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      playMotion(btn.dataset.motion);
+    });
+  });
+
+  document.getElementById('btn-idle').addEventListener('click', () => {
+    if (live2dModel) {
+      try {
+        live2dModel.motion('Idle', undefined, PIXI.live2d.MotionPriority.FORCE);
+      } catch (e) {
+        console.warn('待机动作播放失败:', e);
+      }
+    }
+  });
+
+  // ============ 键盘快捷键 ============
+  document.addEventListener('keydown', (e) => {
+    const key = e.key.toLowerCase();
+    switch (key) {
+      case '1': playMotion('Tap'); break;
+      case '2': playMotion('Flick'); break;
+      case '3': playMotion('FlickRight'); break;
+      case '4': playMotion('FlickLeft'); break;
+      case '5': playMotion('Shake'); break;
+      case 'n': currentExpression = 'normal'; updateExprButtons(); break;
+      case 's': currentExpression = 'smile'; updateExprButtons(); break;
+      case 'a': currentExpression = 'angry'; updateExprButtons(); break;
+      case 'd': currentExpression = 'sad'; updateExprButtons(); break;
+      case 'w': currentExpression = 'surprised'; updateExprButtons(); break;
+      case 'b': currentExpression = 'blushing'; updateExprButtons(); break;
+    }
+  });
+
+  function updateExprButtons() {
+    document.querySelectorAll('.btn.expr-btn').forEach(b => {
+      b.classList.toggle('active', b.dataset.expression === currentExpression);
+    });
+  }
+
+  // ============ 窗口大小调整 ============
+  window.addEventListener('resize', () => {
+    if (app && live2dModel) {
+      live2dModel.x = app.screen.width / 2;
+      live2dModel.y = app.screen.height / 2;
+    }
+  });
+
+  // ============ 启动应用 ============
+  init();
+  </script>
+</body>
+</html>
