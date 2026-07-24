@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Live2D 桃濑日和 - 交互式展示</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+      font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    #canvas-container {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      cursor: grab;
+    }
+
+    #canvas-container:active {
+      cursor: grabbing;
+    }
+
+    #canvas-container.dragging {
+      cursor: grabbing;
+    }
+
+    /* 粒子背景 */
+    .particles {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .particle {
+      position: absolute;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.3);
+      animation: floatUp linear infinite;
+    }
+
+    @keyframes floatUp {
+      0% {
+        transform: translateY(100vh) scale(0);
+        opacity: 0;
+      }
+      10% {
+        opacity: 1;
+      }
+      90% {
+        opacity: 1;
+      }
+      100% {
+        transform: translateY(-10vh) scale(1);
+        opacity: 0;
+      }
+    }
+
+    /* 控制面板 */
+    .control-panel {
+      position: fixed;
+      bottom: 30px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 12px;
+      z-index: 10;
+      background: rgba(0, 0, 0, 0.5);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      padding: 12px 20px;
+      border-radius: 50px;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .control-btn {
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      color: #fff;
+      padding: 10px 18px;
+      border-radius: 25px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 500;
+      transition: all 0.3s ease;
+      white-space: nowrap;
+      letter-spacing: 0.5px;
+      font-family: inherit;
+    }
+
+    .control-btn:hover {
+      background: rgba(255, 255, 255, 0.25);
+      border-color: rgba(255, 255, 255, 0.5);
+      transform: translateY(-2px);
+      box-shadow: 0 8px 25px rgba(0, 0, 0, 0.3);
+    }
+
+    .control-btn:active {
+      transform: scale(0.95);
+      transition: transform 0.1s ease;
+    }
+
+    .control-btn.active {
+      background: rgba(100, 180, 255, 0.4);
+      border-color: rgba(100, 180, 255, 0.7);
+      box-shadow: 0 0 20px rgba(100, 180, 255, 0.3);
+    }
+
+    /* 状态提示 */
+    .status-indicator {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      z-index: 10;
+      color: rgba(255, 255, 255, 0.6);
+      font-size: 12px;
+      letter-spacing: 1px;
+      text-align: right;
+      pointer-events: none;
+    }
+
+    .status-dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #4ade80;
+      margin-right: 8px;
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    /* 提示文字 */
+    .hint-text {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 5;
+      color: rgba(255, 255, 255, 0.4);
+      font-size: 16px;
+      letter-spacing: 2px;
+      pointer-events: none;
+      transition: opacity 0.5s ease;
+    }
+
+    /* 响应式 */
+    @media (max-width: 600px) {
+      .control-panel {
+        bottom: 20px;
+        padding: 10px 14px;
+        gap: 8px;
+        border-radius: 35px;
+      }
+      .control-btn {
+        padding: 8px 14px;
+        font-size: 12px;
+        border-radius: 20px;
+      }
+      .status-indicator {
+        top: 10px;
+        right: 10px;
+        font-size: 10px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <!-- 粒子背景 -->
+  <div class="particles" id="particles"></div>
+
+  <!-- 画布容器 -->
+  <div id="canvas-container"></div>
+
+  <!-- 状态提示 -->
+  <div class="status-indicator">
+    <span class="status-dot"></span>Live2D Cubism 4
+  </div>
+
+  <!-- 提示文字 -->
+  <div class="hint-text" id="hint">拖拽移动 · 滚轮缩放 · 点击互动</div>
+
+  <!-- 控制面板 -->
+  <div class="control-panel" id="controlPanel">
+    <button class="control-btn" data-motion="Idle" title="随机待机动作">待机</button>
+    <button class="control-btn" data-motion="Tap" title="点击头部">摸头</button>
+    <button class="control-btn" data-motion="Tap@Body" title="点击身体">戳戳</button>
+    <button class="control-btn" data-motion="Flick" title="滑动头部">拨弄</button>
+    <button class="control-btn" data-motion="Flick@Body" title="滑动身体">推推</button>
+    <button class="control-btn" data-motion="FlickDown" title="向下滑动">下拉</button>
+    <button class="control-btn" id="resetBtn" title="重置位置">重置</button>
+  </div>
+
+  <!-- 本地化 Cubism Core -->
+  <script src="live2dcubismcore.min.js"></script>
+  <!-- PixiJS -->
+  <script src="https://cdn.jsdelivr.net/npm/pixi.js@7.4.2/dist/pixi.min.js"></script>
+  <!-- pixi-live2d-display (Cubism 4) -->
+  <script src="https://cdn.jsdelivr.net/npm/pixi-live2d-display-webgal@0.5.12/dist/cubism4.min.js"></script>
+
+  <script>
+    (async function() {
+      // ==================== 粒子背景 ====================
+      const particlesContainer = document.getElementById('particles');
+      for (let i = 0; i < 40; i++) {
+        const particle = document.createElement('div');
+        particle.className = 'particle';
+        const size = Math.random() * 4 + 2;
+        particle.style.width = size + 'px';
+        particle.style.height = size + 'px';
+        particle.style.left = Math.random() * 100 + '%';
+        particle.style.animationDuration = (Math.random() * 8 + 6) + 's';
+        particle.style.animationDelay = Math.random() * 8 + 's';
+        particle.style.opacity = Math.random() * 0.5 + 0.1;
+        particlesContainer.appendChild(particle);
+      }
+
+      // ==================== 模型路径 (jsDelivr CDN) ====================
+      const GITHUB_USER = 'Qing-Feng-123';
+      const GITHUB_REPO = 'live2Dsample';
+      const GITHUB_BRANCH = 'main';
+      const MODEL_BASE = `https://cdn.jsdelivr.net/gh/${GITHUB_USER}/${GITHUB_REPO}@${GITHUB_BRANCH}/runtime/`;
+      const MODEL_URL = MODEL_BASE + 'hiyori_free_t08.model3.json';
+
+      // ==================== PixiJS 应用初始化 ====================
+      const container = document.getElementById('canvas-container');
+      const app = new PIXI.Application({
+        resizeTo: container,
+        backgroundAlpha: 0,
+        antialias: true,
+        resolution: window.devicePixelRatio || 1,
+        autoDensity: true,
+      });
+
+      container.appendChild(app.view);
+      app.view.style.position = 'absolute';
+      app.view.style.top = '0';
+      app.view.style.left = '0';
+
+      // ==================== 加载模型 ====================
+      const hint = document.getElementById('hint');
+      hint.textContent = '正在加载模型...';
+
+      let model, dragging = false, dragStart = { x: 0, y: 0 }, modelStart = { x: 0, y: 0 };
+      let currentScale = 0.18;
+      let targetScale = 0.18;
+      let isPinching = false;
+      let lastPinchDist = 0;
+
+      try {
+        model = await PIXI.live2d.Live2DModel.from(MODEL_URL, {
+          autoInteract: true,
+          autoUpdate: true,
+        });
+
+        app.stage.addChild(model);
+
+        // 初始位置和缩放
+        model.anchor.set(0.5, 0.5);
+        model.x = app.screen.width / 2;
+        model.y = app.screen.height / 2 + 50;
+        model.scale.set(currentScale);
+
+        hint.textContent = '拖拽移动 · 滚轮缩放 · 点击互动';
+        setTimeout(() => { hint.style.opacity = '0'; }, 3000);
+
+        console.log('✅ 模型加载成功: 桃濑日和 (Hiyori Momose)');
+        console.log('   Cubism 3.0 模型 | Live2D Cubism 4 SDK');
+      } catch (err) {
+        console.error('❌ 模型加载失败:', err);
+        hint.textContent = '模型加载失败，请检查网络连接';
+        hint.style.color = 'rgba(255, 100, 100, 0.8)';
+        return;
+      }
+
+      // ==================== 交互：拖拽移动 ====================
+      const onPointerDown = (e) => {
+        const pos = e.data.getLocalPosition(app.stage);
+        dragStart = { x: pos.x, y: pos.y };
+        modelStart = { x: model.x, y: model.y };
+        dragging = true;
+        container.classList.add('dragging');
+      };
+
+      const onPointerMove = (e) => {
+        if (!dragging || isPinching) return;
+        const pos = e.data.getLocalPosition(app.stage);
+        const dx = pos.x - dragStart.x;
+        const dy = pos.y - dragStart.y;
+        model.x = modelStart.x + dx;
+        model.y = modelStart.y + dy;
+      };
+
+      const onPointerUp = () => {
+        dragging = false;
+        container.classList.remove('dragging');
+      };
+
+      model.on('pointerdown', onPointerDown);
+      app.stage.on('pointermove', onPointerMove);
+      app.stage.on('pointerup', onPointerUp);
+      app.stage.on('pointerupoutside', onPointerUp);
+
+      // 使舞台可交互
+      app.stage.eventMode = 'static';
+      app.stage.hitArea = app.screen;
+
+      // ==================== 交互：滚轮缩放 ====================
+      app.view.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        targetScale = Math.max(0.08, Math.min(0.5, targetScale - e.deltaY * 0.0005));
+      }, { passive: false });
+
+      // ==================== 触摸手势：双指缩放 ====================
+      app.view.addEventListener('touchstart', (e) => {
+        if (e.touches.length === 2) {
+          isPinching = true;
+          lastPinchDist = Math.hypot(
+            e.touches[0].clientX - e.touches[1].clientX,
+            e.touches[0].clientY - e.touches[1].clientY
+          );
+        }
+      }, { passive: false });
+
+      app.view.addEventListener('touchmove', (e) => {
+        if (isPinching && e.touches.length === 2) {
+          e.preventDefault();
+          const dist = Math.hypot(
+            e.touches[0].clientX - e.touches[1].clientX,
+            e.touches[0].clientY - e.touches[1].clientY
+          );
+          const delta = (dist - lastPinchDist) * 0.001;
+          targetScale = Math.max(0.08, Math.min(0.5, targetScale + delta));
+          lastPinchDist = dist;
+        }
+      }, { passive: false });
+
+      app.view.addEventListener('touchend', (e) => {
+        if (e.touches.length < 2) {
+          isPinching = false;
+        }
+      });
+
+      // ==================== 控制按钮 ====================
+      const buttons = document.querySelectorAll('.control-btn[data-motion]');
+      buttons.forEach(btn => {
+        btn.addEventListener('click', () => {
+          const motionGroup = btn.dataset.motion;
+
+          // 高亮按钮
+          buttons.forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          setTimeout(() => btn.classList.remove('active'), 500);
+
+          if (motionGroup === 'Idle') {
+            // 随机播放待机动作
+            model.motion('Idle');
+          } else {
+            // 播放指定动作组
+            model.motion(motionGroup);
+          }
+
+          // 状态提示
+          hint.textContent = '动作: ' + btn.textContent;
+          hint.style.opacity = '1';
+          hint.style.color = 'rgba(255, 255, 255, 0.6)';
+          clearTimeout(hint._timeout);
+          hint._timeout = setTimeout(() => {
+            hint.style.opacity = '0';
+          }, 1500);
+        });
+      });
+
+      // 重置按钮
+      document.getElementById('resetBtn').addEventListener('click', () => {
+        model.x = app.screen.width / 2;
+        model.y = app.screen.height / 2 + 50;
+        targetScale = 0.18;
+        currentScale = 0.18;
+        model.scale.set(currentScale);
+
+        hint.textContent = '已重置';
+        hint.style.opacity = '1';
+        hint.style.color = 'rgba(255, 255, 255, 0.6)';
+        clearTimeout(hint._timeout);
+        hint._timeout = setTimeout(() => {
+          hint.style.opacity = '0';
+        }, 1000);
+      });
+
+      // ==================== 键盘快捷键 ====================
+      window.addEventListener('keydown', (e) => {
+        switch (e.key.toLowerCase()) {
+          case 'r':
+            model.x = app.screen.width / 2;
+            model.y = app.screen.height / 2 + 50;
+            targetScale = 0.18;
+            break;
+          case '1':
+            model.motion('Idle');
+            break;
+          case '2':
+            model.motion('Tap');
+            break;
+          case '3':
+            model.motion('Tap@Body');
+            break;
+          case '4':
+            model.motion('Flick');
+            break;
+          case '5':
+            model.motion('Flick@Body');
+            break;
+          case '6':
+            model.motion('FlickDown');
+            break;
+          case '+':
+          case '=':
+            targetScale = Math.min(0.5, targetScale + 0.05);
+            break;
+          case '-':
+            targetScale = Math.max(0.08, targetScale - 0.05);
+            break;
+        }
+      });
+
+      // ==================== 窗口大小调整 ====================
+      window.addEventListener('resize', () => {
+        app.stage.hitArea = app.screen;
+        // 保持模型在可视范围内
+        model.x = Math.max(0, Math.min(app.screen.width, model.x));
+        model.y = Math.max(0, Math.min(app.screen.height, model.y));
+      });
+
+      // ==================== 渲染循环 ====================
+      app.ticker.add(() => {
+        // 平滑缩放过渡
+        currentScale += (targetScale - currentScale) * 0.15;
+        model.scale.set(currentScale);
+
+        // 边界限制
+        const margin = 100 * currentScale;
+        model.x = Math.max(-margin, Math.min(app.screen.width + margin, model.x));
+        model.y = Math.max(-margin, Math.min(app.screen.height + margin, model.y));
+      });
+
+      console.log('🎮 Live2D 交互式前端已就绪');
+      console.log('   鼠标拖拽: 移动角色');
+      console.log('   滚轮: 缩放');
+      console.log('   点击角色: 触发互动');
+      console.log('   键盘 1-6: 切换动作');
+      console.log('   键盘 +/-: 缩放');
+      console.log('   键盘 R: 重置');
+      console.log('   CDN: jsDelivr (GitHub)');
+      console.log('   Cubism Core: 本地化');
+    })();
+  </script>
+</body>
+</html>
