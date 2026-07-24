@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Live2D 日和 - 交互式角色</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    width: 100vw; height: 100vh;
+    overflow: hidden;
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+    font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    user-select: none; -webkit-user-select: none;
+    cursor: default;
+  }
+  canvas { display: block; }
+
+  #ui-overlay {
+    position: fixed; bottom: 28px; left: 50%;
+    transform: translateX(-50%);
+    display: flex; gap: 12px; z-index: 10;
+    flex-wrap: wrap; justify-content: center;
+    padding: 0 16px;
+  }
+  .btn {
+    padding: 10px 20px;
+    border: 1px solid rgba(255,255,255,0.22);
+    border-radius: 28px;
+    background: rgba(255,255,255,0.07);
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    color: #fff; font-size: 14px;
+    cursor: pointer; transition: all 0.3s ease;
+    letter-spacing: 0.5px; white-space: nowrap;
+  }
+  .btn:hover {
+    background: rgba(255,255,255,0.16);
+    border-color: rgba(255,255,255,0.45);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(0,0,0,0.3);
+  }
+  .btn:active { transform: translateY(0); background: rgba(255,255,255,0.22); }
+  .btn.active {
+    background: rgba(255,120,160,0.3);
+    border-color: rgba(255,120,160,0.6);
+    box-shadow: 0 0 18px rgba(255,120,160,0.25);
+  }
+
+  #hint {
+    position: fixed; top: 22px; left: 50%;
+    transform: translateX(-50%);
+    color: rgba(255,255,255,0.55);
+    font-size: 13px; z-index: 10;
+    letter-spacing: 1px; pointer-events: none;
+    transition: opacity 0.8s;
+  }
+
+  #loading {
+    position: fixed; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    z-index: 100; background: #1a1a2e;
+    transition: opacity 0.5s, visibility 0.5s;
+  }
+  #loading.hidden { opacity: 0; visibility: hidden; pointer-events: none; }
+  .spinner {
+    width: 44px; height: 44px;
+    border: 3px solid rgba(255,255,255,0.12);
+    border-top: 3px solid #ff7aa0;
+    border-radius: 50%; animation: spin 0.9s linear infinite;
+    margin-bottom: 16px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #loading-text { color: rgba(255,255,255,0.65); font-size: 14px; letter-spacing: 1px; }
+
+  #error-msg {
+    display: none; position: fixed; inset: 0;
+    align-items: center; justify-content: center;
+    z-index: 200; background: #1a1a2e;
+    flex-direction: column; gap: 16px;
+  }
+  #error-msg.show { display: flex; }
+  #error-msg p { color: #ff6b6b; font-size: 15px; text-align: center; padding: 0 20px; }
+
+  @media (max-width: 600px) {
+    .btn { padding: 8px 14px; font-size: 12px; border-radius: 22px; }
+    #ui-overlay { gap: 6px; bottom: 18px; }
+  }
+</style>
+</head>
+<body>
+
+<canvas id="live2d"></canvas>
+
+<div id="loading">
+  <div class="spinner"></div>
+  <div id="loading-text">加载角色模型中...</div>
+</div>
+
+<div id="error-msg">
+  <p id="error-text"></p>
+</div>
+
+<div id="hint">移动鼠标看角色 ✦ 点击角色互动 ✦ 拖拽旋转</div>
+
+<div id="ui-overlay">
+  <button class="btn" data-motion="Idle">待机</button>
+  <button class="btn" data-motion="Tap">摸头</button>
+  <button class="btn" data-motion="Tap@Body">戳身体</button>
+  <button class="btn" data-motion="Flick">摸头滑动</button>
+  <button class="btn" data-motion="Flick@Body">身体滑动</button>
+  <button class="btn" data-motion="FlickDown">下滑</button>
+</div>
+
+<!-- PixiJS -->
+<script src="https://cdn.jsdelivr.net/npm/pixi.js@7.3.3/dist/pixi.min.js"></script>
+<!-- Live2D Cubism Core -->
+<script src="https://cdn.jsdelivr.net/npm/@novasdream/pixi-live2d-display-cubism4@0.5.0/dist/cubismcore.min.js"></script>
+<!-- pixi-live2d-display -->
+<script src="https://cdn.jsdelivr.net/npm/pixi-live2d-display@0.5.0/dist/index.min.js"></script>
+
+<script>
+(function() {
+  const loadingEl = document.getElementById('loading');
+  const loadingText = document.getElementById('loading-text');
+  const hintEl = document.getElementById('hint');
+  const errorEl = document.getElementById('error-msg');
+  const errorText = document.getElementById('error-text');
+
+  function showError(msg) {
+    loadingEl.classList.add('hidden');
+    errorText.textContent = msg;
+    errorEl.classList.add('show');
+  }
+
+  // 检查依赖
+  if (typeof PIXI === 'undefined') {
+    showError('PixiJS 加载失败，请检查网络连接');
+    return;
+  }
+  if (typeof PIXI.live2d === 'undefined' || typeof PIXI.live2d.Live2DModel === 'undefined') {
+    showError('Live2D 显示库加载失败，请检查网络连接');
+    return;
+  }
+  if (typeof Live2DCubismCore === 'undefined') {
+    showError('Live2D Cubism Core 加载失败，请检查网络连接');
+    return;
+  }
+
+  // 模型 CDN 路径 (jsDelivr)
+  const MODEL_URL = 'https://cdn.jsdelivr.net/gh/Qing-Feng-123/live2Dsample@demo1/runtime/hiyori_free_t08.model3.json';
+
+  // 创建 PixiJS 应用
+  const app = new PIXI.Application({
+    view: document.getElementById('live2d'),
+    resizeTo: window,
+    backgroundAlpha: 0,
+    antialias: true,
+    resolution: window.devicePixelRatio || 1,
+    autoDensity: true,
+  });
+
+  let model = null;
+  let isDragging = false;
+  let dragStart = { x: 0, y: 0 };
+  let modelStart = { x: 0, y: 0 };
+  let mouseX = 0.5, mouseY = 0.5;
+  let targetMouseX = 0.5, targetMouseY = 0.5;
+
+  // 拖拽偏移
+  let dragOffsetX = 0, dragOffsetY = 0;
+  let targetDragOffsetX = 0, targetDragOffsetY = 0;
+
+  // 加载模型
+  async function init() {
+    try {
+      loadingText.textContent = '正在加载模型...';
+      model = await PIXI.live2d.Live2DModel.from(MODEL_URL);
+
+      if (!model) {
+        throw new Error('模型对象为空');
+      }
+
+      loadingText.textContent = '初始化中...';
+
+      // 设置模型
+      app.stage.addChild(model);
+
+      // 缩放和位置
+      const scale = Math.min(app.screen.width, app.screen.height) * 0.0009;
+      model.scale.set(scale);
+      model.anchor.set(0.5, 0.5);
+      model.x = app.screen.width / 2;
+      model.y = app.screen.height / 2 + app.screen.height * 0.05;
+
+      // 交互
+      model.interactive = true;
+      model.cursor = 'pointer';
+
+      model.on('pointerdown', (e) => {
+        isDragging = true;
+        dragStart.x = e.data.global.x;
+        dragStart.y = e.data.global.y;
+        modelStart.x = dragOffsetX;
+        modelStart.y = dragOffsetY;
+      });
+
+      model.on('pointermove', (e) => {
+        targetMouseX = e.data.global.x / app.screen.width;
+        targetMouseY = e.data.global.y / app.screen.height;
+
+        if (isDragging) {
+          const dx = e.data.global.x - dragStart.x;
+          const dy = e.data.global.y - dragStart.y;
+          targetDragOffsetX = modelStart.x + dx * 0.5;
+          targetDragOffsetY = modelStart.y + dy * 0.5;
+        }
+      });
+
+      model.on('pointerup', (e) => {
+        const dx = Math.abs(e.data.global.x - dragStart.x);
+        const dy = Math.abs(e.data.global.y - dragStart.y);
+
+        if (dx < 5 && dy < 5) {
+          // 点击
+          if (e.data.global.y < app.screen.height * 0.45) {
+            playMotion('Tap');
+          } else {
+            playMotion('Tap@Body');
+          }
+        } else if (dx > 25 || dy > 25) {
+          // 滑动
+          if (dy > 0 && dy > Math.abs(dx)) {
+            playMotion('FlickDown');
+          } else if (e.data.global.y < app.screen.height * 0.45) {
+            playMotion('Flick');
+          } else {
+            playMotion('Flick@Body');
+          }
+        }
+
+        isDragging = false;
+        targetDragOffsetX = 0;
+        targetDragOffsetY = 0;
+      });
+
+      model.on('pointerupoutside', () => {
+        isDragging = false;
+        targetDragOffsetX = 0;
+        targetDragOffsetY = 0;
+      });
+
+      // 全局鼠标追踪
+      app.stage.interactive = true;
+      app.stage.hitArea = app.screen;
+
+      app.stage.on('pointermove', (e) => {
+        if (!isDragging) {
+          targetMouseX = e.data.global.x / app.screen.width;
+          targetMouseY = e.data.global.y / app.screen.height;
+        }
+      });
+
+      app.stage.on('pointerleave', () => {
+        targetMouseX = 0.5;
+        targetMouseY = 0.5;
+      });
+
+      // 触摸事件
+      app.stage.on('pointerdown', (e) => {
+        if (e.data.pointerType === 'touch') {
+          isDragging = true;
+          dragStart.x = e.data.global.x;
+          dragStart.y = e.data.global.y;
+          modelStart.x = dragOffsetX;
+          modelStart.y = dragOffsetY;
+        }
+      });
+
+      app.stage.on('pointerup', (e) => {
+        if (e.data.pointerType === 'touch' && isDragging) {
+          const dx = Math.abs(e.data.global.x - dragStart.x);
+          const dy = Math.abs(e.data.global.y - dragStart.y);
+          if (dx < 10 && dy < 10) {
+            playMotion('Tap');
+          }
+          isDragging = false;
+          targetDragOffsetX = 0;
+          targetDragOffsetY = 0;
+        }
+      });
+
+      // 窗口大小变化
+      window.addEventListener('resize', () => {
+        if (model) {
+          const s = Math.min(app.screen.width, app.screen.height) * 0.0009;
+          model.scale.set(s);
+          model.x = app.screen.width / 2;
+          model.y = app.screen.height / 2 + app.screen.height * 0.05;
+        }
+      });
+
+      // 加载完成
+      loadingText.textContent = '准备就绪!';
+      setTimeout(() => loadingEl.classList.add('hidden'), 400);
+
+      // 提示
+      hintEl.style.opacity = '1';
+      setTimeout(() => { hintEl.style.opacity = '0'; }, 7000);
+
+      console.log('Live2D 日和 加载完成!');
+    } catch (err) {
+      console.error('模型加载失败:', err);
+      showError('模型加载失败: ' + (err.message || '未知错误') + '\n请检查 jsDelivr CDN 是否已同步');
+    }
+  }
+
+  // 播放动作
+  function playMotion(name) {
+    if (!model) return;
+    try {
+      model.motion(name);
+    } catch (e) {
+      console.warn('动作播放失败:', name, e);
+    }
+  }
+
+  // 按钮事件
+  document.querySelectorAll('.btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+      const motion = this.dataset.motion;
+      playMotion(motion);
+      document.querySelectorAll('.btn').forEach(b => b.classList.remove('active'));
+      this.classList.add('active');
+      setTimeout(() => this.classList.remove('active'), 600);
+    });
+  });
+
+  // 键盘快捷键
+  window.addEventListener('keydown', (e) => {
+    const keyMap = {
+      '1': 'Idle', '2': 'Tap', '3': 'Tap@Body',
+      '4': 'Flick', '5': 'Flick@Body', '6': 'FlickDown',
+    };
+    if (keyMap[e.key]) {
+      playMotion(keyMap[e.key]);
+      const btn = document.querySelector(`[data-motion="${keyMap[e.key]}"]`);
+      if (btn) {
+        btn.classList.add('active');
+        setTimeout(() => btn.classList.remove('active'), 600);
+      }
+    }
+    if (e.key === 'r' || e.key === 'R') {
+      targetMouseX = 0.5; targetMouseY = 0.5;
+      targetDragOffsetX = 0; targetDragOffsetY = 0;
+    }
+  });
+
+  // 平滑更新循环
+  app.ticker.add(() => {
+    if (!model) return;
+
+    // 平滑插值
+    mouseX += (targetMouseX - mouseX) * 0.08;
+    mouseY += (targetMouseY - mouseY) * 0.08;
+    dragOffsetX += (targetDragOffsetX - dragOffsetX) * 0.08;
+    dragOffsetY += (targetDragOffsetY - dragOffsetY) * 0.08;
+
+    // 更新模型位置（拖拽偏移）
+    model.x = app.screen.width / 2 + dragOffsetX;
+    model.y = app.screen.height / 2 + app.screen.height * 0.05 + dragOffsetY;
+
+    // 鼠标追踪 - 头部跟随
+    const angleX = (mouseX - 0.5) * 25;
+    const angleY = (mouseY - 0.5) * 18;
+
+    // 更新 Live2D 参数
+    try {
+      if (model.internalModel) {
+        const coreModel = model.internalModel.coreModel;
+        const paramIds = {};
+
+        // 获取参数 ID 映射
+        for (let i = 0; i < Live2DCubismCore.getParameterCount(coreModel); i++) {
+          const id = Live2DCubismCore.getParameterId(coreModel, i);
+          paramIds[id] = i;
+        }
+
+        // 角度
+        if (paramIds['ParamAngleX'] !== undefined)
+          Live2DCubismCore.setParameterValue(coreModel, paramIds['ParamAngleX'], angleX * 0.35);
+        if (paramIds['ParamAngleY'] !== undefined)
+          Live2DCubismCore.setParameterValue(coreModel, paramIds['ParamAngleY'], angleY * 0.35);
+        if (paramIds['ParamAngleZ'] !== undefined)
+          Live2DCubismCore.setParameterValue(coreModel, paramIds['ParamAngleZ'], angleX * 0.08);
+
+        // 身体角度
+        if (paramIds['ParamBodyAngleX'] !== undefined)
+          Live2DCubismCore.setParameterValue(coreModel, paramIds['ParamBodyAngleX'], angleX * 0.15);
+        if (paramIds['ParamBodyAngleY'] !== undefined)
+          Live2DCubismCore.setParameterValue(coreModel, paramIds['ParamBodyAngleY'], angleY * 0.08);
+        if (paramIds['ParamBodyAngleZ'] !== undefined)
+          Live2DCubismCore.setParameterValue(coreModel, paramIds['ParamBodyAngleZ'], angleX * 0.04);
+      }
+    } catch (e) {
+      // 参数更新失败，忽略
+    }
+  });
+
+  // 启动
+  init();
+
+})();
+</script>
+
+</body>
+</html>
