@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Live2D Hiyori - 交互式角色</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+      font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+      user-select: none;
+      -webkit-user-select: none;
+      cursor: default;
+    }
+    #canvas-container {
+      position: fixed;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      z-index: 1;
+    }
+    canvas { display: block; }
+
+    /* 提示面板 */
+    #hint-panel {
+      position: fixed;
+      bottom: 30px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 10;
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    .hint-item {
+      background: rgba(255,255,255,0.1);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 12px;
+      padding: 8px 16px;
+      color: rgba(255,255,255,0.8);
+      font-size: 13px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.3s;
+    }
+    .hint-item .icon { font-size: 16px; }
+    .hint-item .key {
+      background: rgba(255,255,255,0.2);
+      border-radius: 4px;
+      padding: 1px 6px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    /* 加载界面 */
+    #loading {
+      position: fixed;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+      background: rgba(0,0,0,0.7);
+      transition: opacity 0.5s;
+    }
+    #loading.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+    #loading .spinner {
+      width: 48px; height: 48px;
+      border: 3px solid rgba(255,255,255,0.2);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin-bottom: 16px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #loading .text {
+      color: rgba(255,255,255,0.8);
+      font-size: 14px;
+    }
+
+    /* 粒子背景 */
+    #particles {
+      position: fixed;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      z-index: 0;
+      pointer-events: none;
+    }
+    .particle {
+      position: absolute;
+      border-radius: 50%;
+      background: rgba(255,255,255,0.15);
+      animation: floatUp linear infinite;
+    }
+    @keyframes floatUp {
+      0% { transform: translateY(100vh) scale(0); opacity: 0; }
+      10% { opacity: 1; }
+      90% { opacity: 1; }
+      100% { transform: translateY(-10vh) scale(1); opacity: 0; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- 粒子背景 -->
+  <div id="particles"></div>
+
+  <!-- 画布容器 -->
+  <div id="canvas-container"></div>
+
+  <!-- 加载界面 -->
+  <div id="loading">
+    <div class="spinner"></div>
+    <div class="text">加载角色模型中...</div>
+  </div>
+
+  <!-- 操作提示 -->
+  <div id="hint-panel">
+    <div class="hint-item">
+      <span class="icon">🖱️</span>
+      <span>移动鼠标</span>
+      <span class="key">视线跟随</span>
+    </div>
+    <div class="hint-item">
+      <span class="icon">👆</span>
+      <span>点击角色</span>
+      <span class="key">互动动画</span>
+    </div>
+    <div class="hint-item">
+      <span class="icon">🖱️</span>
+      <span>拖拽</span>
+      <span class="key">移动位置</span>
+    </div>
+    <div class="hint-item">
+      <span class="icon">📜</span>
+      <span>滚轮</span>
+      <span class="key">缩放</span>
+    </div>
+  </div>
+
+  <!-- PixiJS -->
+  <script src="https://pixijs.download/v7.3.3/pixi.min.js"></script>
+  <!-- pixi-live2d-display -->
+  <script src="https://cdn.jsdelivr.net/npm/pixi-live2d-display@0.5.0/dist/index.min.js"></script>
+
+  <script>
+  (async function() {
+    // ==================== 粒子背景 ====================
+    const particlesContainer = document.getElementById('particles');
+    for (let i = 0; i < 40; i++) {
+      const p = document.createElement('div');
+      p.className = 'particle';
+      const size = Math.random() * 4 + 2;
+      p.style.width = size + 'px';
+      p.style.height = size + 'px';
+      p.style.left = Math.random() * 100 + '%';
+      p.style.animationDuration = (Math.random() * 8 + 6) + 's';
+      p.style.animationDelay = (Math.random() * 8) + 's';
+      p.style.background = `rgba(${200 + Math.random()*55}, ${200 + Math.random()*55}, ${220 + Math.random()*35}, ${0.08 + Math.random() * 0.12})`;
+      particlesContainer.appendChild(p);
+    }
+
+    // ==================== PixiJS 应用 ====================
+    const app = new PIXI.Application({
+      resizeTo: window,
+      backgroundAlpha: 0,
+      antialias: true,
+      resolution: window.devicePixelRatio || 1,
+      autoDensity: true,
+    });
+    document.getElementById('canvas-container').appendChild(app.view);
+
+    // ==================== 加载 Live2D 模型 ====================
+    const MODEL_BASE_URL = 'https://raw.githubusercontent.com/Qing-Feng-123/live2Dsample/main/runtime/';
+    const modelUrl = MODEL_BASE_URL + 'hiyori_free_t08.model3.json';
+
+    let model = null;
+    let isDragging = false;
+    let dragStart = { x: 0, y: 0 };
+    let modelPos = { x: 0, y: 0 };
+    let modelScale = 0.18;
+    let targetScale = 0.18;
+    let mouseX = 0, mouseY = 0;
+    let targetMouseX = 0, targetMouseY = 0;
+
+    try {
+      model = await PIXI.live2d.Live2DModel.from(modelUrl, {
+        autoInteract: true,
+        motionSync: true,
+      });
+
+      // 初始位置（屏幕中央偏下）
+      model.x = app.screen.width / 2;
+      model.y = app.screen.height * 0.55;
+      model.scale.set(modelScale);
+      model.anchor.set(0.5, 0.5);
+      modelPos.x = model.x;
+      modelPos.y = model.y;
+
+      app.stage.addChild(model);
+
+      // 隐藏加载界面
+      document.getElementById('loading').classList.add('hidden');
+
+      // ==================== 鼠标/触摸交互 ====================
+      const updateMouseTarget = (clientX, clientY) => {
+        targetMouseX = (clientX / window.innerWidth) * 2 - 1;  // -1 ~ 1
+        targetMouseY = (clientY / window.innerHeight) * 2 - 1; // -1 ~ 1
+      };
+
+      // 鼠标移动 - 视线跟随
+      window.addEventListener('mousemove', (e) => {
+        updateMouseTarget(e.clientX, e.clientY);
+      });
+
+      // 触摸移动
+      window.addEventListener('touchmove', (e) => {
+        if (e.touches.length === 1 && !isDragging) {
+          updateMouseTarget(e.touches[0].clientX, e.touches[0].clientY);
+        }
+      }, { passive: true });
+
+      // 点击角色 - 播放互动动画
+      model.on('hit', (hitAreas) => {
+        const motions = ['Tap', 'Tap@Body', 'Flick', 'FlickDown'];
+        const motion = motions[Math.floor(Math.random() * motions.length)];
+        if (model.motionGroups[motion]) {
+          model.motion(motion);
+        }
+
+        // 点击特效
+        createClickEffect(model.x, model.y);
+      });
+
+      // ==================== 拖拽移动 ====================
+      const onDragStart = (e) => {
+        const pos = e.touches ? e.touches[0] : e;
+        isDragging = true;
+        dragStart.x = pos.clientX - modelPos.x;
+        dragStart.y = pos.clientY - modelPos.y;
+        app.view.style.cursor = 'grabbing';
+      };
+
+      const onDragMove = (e) => {
+        if (!isDragging) return;
+        const pos = e.touches ? e.touches[0] : e;
+        modelPos.x = pos.clientX - dragStart.x;
+        modelPos.y = pos.clientY - dragStart.y;
+        e.preventDefault();
+      };
+
+      const onDragEnd = () => {
+        isDragging = false;
+        app.view.style.cursor = 'default';
+      };
+
+      app.view.addEventListener('mousedown', onDragStart);
+      app.view.addEventListener('touchstart', (e) => {
+        if (e.touches.length === 1) onDragStart(e);
+      }, { passive: false });
+      window.addEventListener('mousemove', onDragMove);
+      window.addEventListener('touchmove', (e) => {
+        if (isDragging && e.touches.length === 1) onDragMove(e);
+      }, { passive: false });
+      window.addEventListener('mouseup', onDragEnd);
+      window.addEventListener('touchend', onDragEnd);
+
+      // ==================== 滚轮缩放 ====================
+      window.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        targetScale = Math.max(0.08, Math.min(0.5, targetScale - e.deltaY * 0.0005));
+      }, { passive: false });
+
+      // ==================== 窗口大小调整 ====================
+      window.addEventListener('resize', () => {
+        app.resize();
+      });
+
+      // ==================== 点击特效 ====================
+      function createClickEffect(x, y) {
+        const container = document.getElementById('canvas-container');
+        for (let i = 0; i < 8; i++) {
+          const spark = document.createElement('div');
+          spark.style.cssText = `
+            position: fixed;
+            left: ${x}px;
+            top: ${y}px;
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: hsl(${Math.random() * 60 + 330}, 80%, 70%);
+            pointer-events: none;
+            z-index: 50;
+            transition: all 0.6s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+            opacity: 1;
+          `;
+          document.body.appendChild(spark);
+          const angle = (Math.PI * 2 * i) / 8;
+          const dist = 30 + Math.random() * 40;
+          requestAnimationFrame(() => {
+            spark.style.transform = `translate(${Math.cos(angle) * dist}px, ${Math.sin(angle) * dist}px) scale(0)`;
+            spark.style.opacity = '0';
+          });
+          setTimeout(() => spark.remove(), 700);
+        }
+      }
+
+      // ==================== 键盘快捷键 ====================
+      window.addEventListener('keydown', (e) => {
+        switch(e.key.toLowerCase()) {
+          case '1':
+            if (model.motionGroups['Idle']) model.motion('Idle');
+            break;
+          case '2':
+            if (model.motionGroups['Tap']) model.motion('Tap');
+            break;
+          case '3':
+            if (model.motionGroups['Flick']) model.motion('Flick');
+            break;
+          case 'r':
+            // 重置位置
+            modelPos.x = app.screen.width / 2;
+            modelPos.y = app.screen.height * 0.55;
+            targetScale = 0.18;
+            break;
+          case 'f':
+            // 全屏
+            if (!document.fullscreenElement) {
+              document.body.requestFullscreen().catch(() => {});
+            } else {
+              document.exitFullscreen();
+            }
+            break;
+        }
+      });
+
+      // ==================== 主循环 ====================
+      app.ticker.add(() => {
+        if (!model) return;
+
+        // 平滑鼠标跟随
+        mouseX += (targetMouseX - mouseX) * 0.08;
+        mouseY += (targetMouseY - mouseY) * 0.08;
+
+        // 平滑缩放
+        modelScale += (targetScale - modelScale) * 0.1;
+
+        // 更新模型位置（平滑）
+        model.x += (modelPos.x - model.x) * 0.12;
+        model.y += (modelPos.y - model.y) * 0.12;
+        model.scale.set(modelScale);
+
+        // 鼠标交互参数（视线跟随、身体旋转）
+        if (!isDragging && model.internalModel) {
+          // 头部角度 X（上下）- 映射鼠标Y
+          const coreModel = model.internalModel.coreModel;
+          if (coreModel) {
+            try {
+              coreModel.setParameterValueById('ParamAngleX', mouseY * 25);
+              coreModel.setParameterValueById('ParamAngleY', mouseX * 25);
+              coreModel.setParameterValueById('ParamAngleZ', mouseX * 10);
+              coreModel.setParameterValueById('ParamBodyAngleX', mouseY * 8);
+              coreModel.setParameterValueById('ParamBodyAngleY', mouseX * 12);
+              coreModel.setParameterValueById('ParamBodyAngleZ', mouseX * 5);
+              coreModel.setParameterValueById('ParamEyeBallX', mouseX);
+              coreModel.setParameterValueById('ParamEyeBallY', mouseY * 0.5);
+            } catch(e) {}
+          }
+        }
+      });
+
+      console.log('✅ Live2D Hiyori 模型加载成功！');
+      console.log('🖱️  移动鼠标 - 视线跟随');
+      console.log('👆  点击角色 - 互动动画');
+      console.log('🖱️  拖拽 - 移动位置');
+      console.log('📜  滚轮 - 缩放');
+      console.log('⌨️  按 1/2/3 - 切换动画');
+      console.log('⌨️  按 R - 重置位置');
+      console.log('⌨️  按 F - 全屏');
+
+    } catch (error) {
+      console.error('模型加载失败:', error);
+      document.getElementById('loading').innerHTML = `
+        <div style="color:#ff6b6b;font-size:18px;margin-bottom:12px;">⚠️ 模型加载失败</div>
+        <div class="text" style="color:rgba(255,255,255,0.6);">请检查网络连接或 GitHub 仓库</div>
+        <div class="text" style="color:rgba(255,255,255,0.4);font-size:12px;margin-top:8px;">${error.message}</div>
+      `;
+    }
+
+  })();
+  </script>
+</body>
+</html>
