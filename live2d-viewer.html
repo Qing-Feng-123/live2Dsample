@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live2D Viewer</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        }
+
+        canvas {
+            display: block;
+        }
+
+        #loading {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 10;
+            text-align: center;
+            color: #ffffff;
+            transition: opacity 0.5s;
+        }
+
+        #loading .spinner {
+            width: 44px;
+            height: 44px;
+            border: 3px solid rgba(255,255,255,0.2);
+            border-top-color: #ffffff;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin: 0 auto 18px;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        #loading .text {
+            font-size: 15px;
+            letter-spacing: 0.5px;
+            opacity: 0.85;
+        }
+
+        #error {
+            display: none;
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 10;
+            text-align: center;
+            color: #ff6b6b;
+            font-size: 16px;
+            max-width: 500px;
+            line-height: 1.6;
+        }
+
+        #error .detail {
+            font-size: 13px;
+            color: #999;
+            margin-top: 10px;
+            word-break: break-all;
+        }
+
+        #error .retry-btn {
+            display: inline-block;
+            margin-top: 16px;
+            padding: 8px 24px;
+            border: 1px solid rgba(255,255,255,0.3);
+            border-radius: 6px;
+            color: #fff;
+            cursor: pointer;
+            font-size: 14px;
+            background: transparent;
+            transition: all 0.2s;
+        }
+
+        #error .retry-btn:hover {
+            background: rgba(255,255,255,0.1);
+            border-color: rgba(255,255,255,0.6);
+        }
+
+        #model-info {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            color: rgba(255,255,255,0.5);
+            font-size: 12px;
+            letter-spacing: 0.5px;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading">
+        <div class="spinner"></div>
+        <div class="text">Loading Live2D Model...</div>
+    </div>
+
+    <div id="error">
+        <div id="error-msg">Failed to load model</div>
+        <div class="detail" id="error-detail"></div>
+        <button class="retry-btn" onclick="location.reload()">Retry</button>
+    </div>
+
+    <div id="model-info">Live2D Cubism 4 · jsDelivr CDN</div>
+
+    <!-- ============================================ -->
+    <!-- Live2D Cubism Core (must load first)         -->
+    <!-- ============================================ -->
+    <script>
+    // Fallback loader for Cubism Core
+    (function loadCubismCore(sources, index) {
+        if (index >= sources.length) {
+            showError('Failed to load Live2D Cubism Core from all CDN sources.');
+            return;
+        }
+        var script = document.createElement('script');
+        script.src = sources[index];
+        script.onload = function() {
+            console.log('Cubism Core loaded from:', sources[index]);
+        };
+        script.onerror = function() {
+            console.warn('Failed to load from:', sources[index]);
+            loadCubismCore(sources, index + 1);
+        };
+        document.head.appendChild(script);
+    })([
+        'https://cdn.jsdelivr.net/npm/pixi-live2d-display@0.5.0/dist/live2d_cubism_core.min.js',
+        'https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display@0.5.0/dist/live2d_cubism_core.min.js'
+    ], 0);
+    </script>
+
+    <!-- PixiJS -->
+    <script src="https://cdn.jsdelivr.net/npm/pixi.js@7.3.3/dist/pixi.min.js"></script>
+
+    <!-- pixi-live2d-display -->
+    <script src="https://cdn.jsdelivr.net/npm/pixi-live2d-display@0.5.0/dist/index.min.js"></script>
+
+    <script>
+    // ============================================
+    // Error handling
+    // ============================================
+    function showError(msg, detail) {
+        document.getElementById('loading').style.display = 'none';
+        var errEl = document.getElementById('error');
+        errEl.style.display = 'block';
+        document.getElementById('error-msg').textContent = msg;
+        if (detail) {
+            document.getElementById('error-detail').textContent = detail;
+        }
+    }
+
+    // ============================================
+    // CONFIGURATION — Update these values
+    // ============================================
+    const GITHUB_USERNAME = 'Qing-Feng-123';
+    const GITHUB_REPO      = 'live2Dsample';
+    const MODEL_FOLDER     = 'runtime';      // Folder containing model files in repo
+    const MODEL_NAME       = 'haru';         // Model name (without .model3.json)
+
+    // Build jsDelivr CDN URL for the model
+    const MODEL_URL = `https://cdn.jsdelivr.net/gh/${GITHUB_USERNAME}/${GITHUB_REPO}@demo2/${MODEL_FOLDER}/${MODEL_NAME}.model3.json`;
+
+    console.log('Model URL:', MODEL_URL);
+
+    // ============================================
+    // Main Application
+    // ============================================
+    (async function main() {
+        // Wait for dependencies to be available
+        if (typeof PIXI === 'undefined') {
+            showError('PixiJS failed to load', 'Check your network connection.');
+            return;
+        }
+        if (typeof Live2DModel === 'undefined') {
+            showError('pixi-live2d-display failed to load', 'Check your network connection.');
+            return;
+        }
+
+        // Create PIXI Application
+        const app = new PIXI.Application({
+            autoStart: true,
+            resizeTo: window,
+            backgroundAlpha: 0,
+            antialias: true,
+            resolution: window.devicePixelRatio || 1,
+            autoDensity: true,
+        });
+
+        // Append canvas to body
+        document.body.appendChild(app.view);
+        app.view.style.position = 'fixed';
+        app.view.style.top = '0';
+        app.view.style.left = '0';
+        app.view.style.width = '100%';
+        app.view.style.height = '100%';
+
+        // Hide loading when renderer is ready
+        document.getElementById('loading').style.opacity = '0';
+        setTimeout(function() {
+            var el = document.getElementById('loading');
+            if (el.style.opacity === '0') el.style.display = 'none';
+        }, 600);
+
+        // Load Live2D model
+        try {
+            const model = await Live2DModel.from(MODEL_URL, {
+                autoInteract: false,
+                autoFocus: false,
+            });
+
+            // Add model to stage
+            app.stage.addChild(model);
+
+            // Center model
+            model.anchor.set(0.5, 0.5);
+            model.x = app.view.width / 2;
+            model.y = app.view.height / 2;
+
+            // Scale model to fit screen
+            fitModel(model, app.view.width, app.view.height);
+
+            // Play idle motion if available (try both "Idle" and "idle")
+            try {
+                if (model.internalModel && model.internalModel.motionManager) {
+                    const groups = model.internalModel.motionManager.groups;
+                    if (groups) {
+                        const idleKey = groups.Idle ? 'Idle' : (groups.idle ? 'idle' : null);
+                        if (idleKey) {
+                            model.motion(idleKey);
+                            console.log('Playing idle motion group:', idleKey);
+                        }
+                    }
+                }
+            } catch (e) {
+                console.log('No idle motion group found, using default animation');
+            }
+
+            // Handle window resize
+            window.addEventListener('resize', function() {
+                model.x = app.view.width / 2;
+                model.y = app.view.height / 2;
+                fitModel(model, app.view.width, app.view.height);
+            });
+
+            console.log('Live2D model loaded successfully!');
+            document.getElementById('model-info').style.display = 'block';
+
+        } catch (err) {
+            console.error('Failed to load Live2D model:', err);
+            showError(
+                'Failed to load Live2D model',
+                'Check that your model files are correctly placed in the GitHub repo "demo2" branch.\n' +
+                'URL: ' + MODEL_URL + '\n\n' +
+                'Error: ' + (err.message || err)
+            );
+        }
+    })();
+
+    // ============================================
+    // Helper: Scale model to fit screen
+    // ============================================
+    function fitModel(model, screenW, screenH) {
+        const canvasAspect = screenW / screenH;
+        const maxScale = Math.min(screenW / 1400, screenH / 1800, 0.45);
+
+        // Get model's original size from its internal model
+        let modelW = model.width || 1000;
+        let modelH = model.height || 1500;
+
+        if (model.internalModel && model.internalModel.canvasinfo) {
+            const info = model.internalModel.canvasinfo;
+            modelW = info.CanvasWidth || modelW;
+            modelH = info.CanvasHeight || modelH;
+        }
+
+        const modelAspect = modelW / modelH;
+        let scale;
+
+        if (canvasAspect > modelAspect) {
+            scale = screenH * 0.8 / modelH;
+        } else {
+            scale = screenW * 0.7 / modelW;
+        }
+
+        scale = Math.min(scale, maxScale);
+        model.scale.set(scale);
+    }
+    </script>
+</body>
+</html>
