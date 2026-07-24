@@ -1,0 +1,752 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Live2D Haru - 交互式展示</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    overflow: hidden;
+    user-select: none;
+  }
+  canvas {
+    display: block;
+    cursor: pointer;
+  }
+  #container {
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  #info {
+    position: fixed;
+    top: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: rgba(255,255,255,0.7);
+    font-size: 13px;
+    letter-spacing: 1px;
+    pointer-events: none;
+    z-index: 10;
+    text-align: center;
+  }
+  #controls {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    justify-content: center;
+    z-index: 10;
+  }
+  .btn {
+    padding: 8px 18px;
+    border: 1px solid rgba(255,255,255,0.25);
+    background: rgba(255,255,255,0.08);
+    color: rgba(255,255,255,0.85);
+    border-radius: 20px;
+    cursor: pointer;
+    font-size: 13px;
+    letter-spacing: 0.5px;
+    transition: all 0.25s;
+    backdrop-filter: blur(8px);
+  }
+  .btn:hover {
+    background: rgba(255,255,255,0.18);
+    border-color: rgba(255,255,255,0.5);
+    color: #fff;
+  }
+  .btn:active {
+    background: rgba(255,255,255,0.25);
+    transform: scale(0.95);
+  }
+  .btn.active {
+    background: rgba(100,180,255,0.25);
+    border-color: rgba(100,180,255,0.6);
+    color: #fff;
+  }
+  #hint {
+    position: fixed;
+    bottom: 80px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: rgba(255,255,255,0.4);
+    font-size: 12px;
+    pointer-events: none;
+    z-index: 10;
+  }
+  #loading {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%,-50%);
+    color: rgba(255,255,255,0.6);
+    font-size: 14px;
+    z-index: 100;
+  }
+</style>
+</head>
+<body>
+
+<div id="loading">加载 Haru 模型中...</div>
+<div id="info">Haru — Live2D Cubism 4 交互展示</div>
+<div id="container"><canvas id="canvas"></canvas></div>
+<div id="hint">移动鼠标 — 追踪 | 点击 — 互动 | 拖拽 — 甩动</div>
+<div id="controls">
+  <button class="btn active" data-expr="Normal">普通</button>
+  <button class="btn" data-expr="Smile">微笑</button>
+  <button class="btn" data-expr="Angry">生气</button>
+  <button class="btn" data-expr="Sad">悲伤</button>
+  <button class="btn" data-expr="Surprised">惊讶</button>
+  <button class="btn" data-expr="Blushing">害羞</button>
+</div>
+
+<!-- Live2D Cubism Core -->
+<script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
+
+<script>
+// ===== CDN 配置：GitHub 为文件床，jsDelivr 为 CDN =====
+const CDN_BASE = 'https://cdn.jsdelivr.net/gh/Qing-Feng-123/live2Dsample@main/';
+const MODEL_PATH = CDN_BASE + 'runtime/';
+
+// ===== Live2D Cubism Framework (内联实现) =====
+(function() {
+  // 等待 Core 加载
+  if (typeof Live2DCubismCore === 'undefined') {
+    document.getElementById('loading').textContent = 'Live2D Core 加载失败，请检查网络连接';
+    return;
+  }
+
+  const canvas = document.getElementById('canvas');
+  const gl = canvas.getContext('webgl', { alpha: true, premultipliedAlpha: true });
+  if (!gl) {
+    document.getElementById('loading').textContent = 'WebGL 不可用';
+    return;
+  }
+
+  // ===== 工具函数 =====
+  function loadFile(path, type) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('GET', path, true);
+      if (type === 'arraybuffer') xhr.responseType = 'arraybuffer';
+      xhr.onload = () => {
+        if (xhr.status === 200 || xhr.status === 0) {
+          resolve(xhr.response);
+        } else {
+          reject(new Error(`HTTP ${xhr.status}: ${path}`));
+        }
+      };
+      xhr.onerror = () => reject(new Error(`加载失败: ${path}`));
+      xhr.send();
+    });
+  }
+
+  function loadJSON(path) {
+    return loadFile(path, 'text').then(text => JSON.parse(text));
+  }
+
+  // ===== 矩阵工具 =====
+  function createMatrix() {
+    return new Float32Array([
+      1,0,0,0,
+      0,1,0,0,
+      0,0,1,0,
+      0,0,0,1
+    ]);
+  }
+
+  function multiplyMatrices(a, b) {
+    const result = new Float32Array(16);
+    for (let i = 0; i < 4; i++) {
+      for (let j = 0; j < 4; j++) {
+        result[i*4+j] = a[i*4]*b[j] + a[i*4+1]*b[4+j] + a[i*4+2]*b[8+j] + a[i*4+3]*b[12+j];
+      }
+    }
+    return result;
+  }
+
+  function orthoMatrix(left, right, bottom, top, near, far) {
+    const m = new Float32Array(16);
+    m[0] = 2/(right-left); m[1]=0; m[2]=0; m[3]=0;
+    m[4]=0; m[5]=2/(top-bottom); m[6]=0; m[7]=0;
+    m[8]=0; m[9]=0; m[10]=-2/(far-near); m[11]=0;
+    m[12]=-(right+left)/(right-left);
+    m[13]=-(top+bottom)/(top-bottom);
+    m[14]=-(far+near)/(far-near);
+    m[15]=1;
+    return m;
+  }
+
+  function translateMatrix(m, x, y, z) {
+    const t = new Float32Array(16);
+    t[0]=1; t[1]=0; t[2]=0; t[3]=0;
+    t[4]=0; t[5]=1; t[6]=0; t[7]=0;
+    t[8]=0; t[9]=0; t[10]=1; t[11]=0;
+    t[12]=x; t[13]=y; t[14]=z; t[15]=1;
+    return multiplyMatrices(m, t);
+  }
+
+  function scaleMatrix(m, x, y, z) {
+    const s = new Float32Array(16);
+    s[0]=x; s[1]=0; s[2]=0; s[3]=0;
+    s[4]=0; s[5]=y; s[6]=0; s[7]=0;
+    s[8]=0; s[9]=0; s[10]=z; s[11]=0;
+    s[12]=0; s[13]=0; s[14]=0; s[15]=1;
+    return multiplyMatrices(m, s);
+  }
+
+  // ===== 着色器 =====
+  const vertexShaderSrc = `
+    attribute vec2 a_position;
+    attribute vec2 a_texCoord;
+    varying vec2 v_texCoord;
+    uniform mat4 u_matrix;
+    void main() {
+      gl_Position = u_matrix * vec4(a_position, 0.0, 1.0);
+      v_texCoord = a_texCoord;
+    }
+  `;
+
+  const fragmentShaderSrc = `
+    precision mediump float;
+    varying vec2 v_texCoord;
+    uniform sampler2D u_texture;
+    uniform vec4 u_baseColor;
+    uniform vec4 u_multiplyColor;
+    uniform vec4 u_screenColor;
+    void main() {
+      vec4 texColor = texture2D(u_texture, v_texCoord);
+      texColor.rgb = mix(texColor.rgb, texColor.rgb * u_multiplyColor.rgb, u_multiplyColor.a);
+      texColor.rgb = mix(texColor.rgb, 1.0 - (1.0 - texColor.rgb) * (1.0 - u_screenColor.rgb), u_screenColor.a);
+      texColor *= u_baseColor;
+      gl_FragColor = texColor;
+    }
+  `;
+
+  function compileShader(gl, type, src) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, src);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+      console.error('Shader compile error:', gl.getShaderInfoLog(shader));
+      return null;
+    }
+    return shader;
+  }
+
+  function createProgram(gl, vsSrc, fsSrc) {
+    const vs = compileShader(gl, gl.VERTEX_SHADER, vsSrc);
+    const fs = compileShader(gl, gl.FRAGMENT_SHADER, fsSrc);
+    if (!vs || !fs) return null;
+    const program = gl.createProgram();
+    gl.attachShader(program, vs);
+    gl.attachShader(program, fs);
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+      console.error('Program link error:', gl.getProgramInfoLog(program));
+      return null;
+    }
+    return program;
+  }
+
+  const program = createProgram(gl, vertexShaderSrc, fragmentShaderSrc);
+  const aPosition = gl.getAttribLocation(program, 'a_position');
+  const aTexCoord = gl.getAttribLocation(program, 'a_texCoord');
+  const uMatrix = gl.getUniformLocation(program, 'u_matrix');
+  const uTexture = gl.getUniformLocation(program, 'u_texture');
+  const uBaseColor = gl.getUniformLocation(program, 'u_baseColor');
+  const uMultiplyColor = gl.getUniformLocation(program, 'u_multiplyColor');
+  const uScreenColor = gl.getUniformLocation(program, 'u_screenColor');
+
+  // ===== 主渲染器 =====
+  const state = {
+    model: null,
+    moc: null,
+    textures: [],
+    modelMatrix: createMatrix(),
+    expressions: {},
+    currentExpression: null,
+    motions: { idle: [], tap: [], flick: [], flickRight: [], flickLeft: [], flick3: [], shake: [] },
+    currentMotion: null,
+    motionStartTime: 0,
+    motionDuration: 0,
+    idleTimer: null,
+    idleInterval: 8000,
+    angles: { x: 0, y: 0, z: 0 },
+    targetAngles: { x: 0, y: 0, z: 0 },
+    bodyAngles: { x: 0, y: 0, z: 0 },
+    targetBodyAngles: { x: 0, y: 0, z: 0 },
+    blinkTimer: 0,
+    blinkState: 0,
+    breathTimer: 0,
+    dragStart: null,
+    dragging: false,
+    scale: 1.5,
+    offsetX: 0,
+    offsetY: 0,
+    canvasWidth: 0,
+    canvasHeight: 0,
+    textureFlip: true,
+  };
+
+  // ===== 模型加载 =====
+  async function loadModel() {
+    // 加载 model3.json
+    const modelSettings = await loadJSON(MODEL_PATH + 'haru.model3.json');
+
+    // 加载 moc3
+    const mocData = await loadFile(MODEL_PATH + modelSettings.FileReferences.Moc, 'arraybuffer');
+    state.moc = Live2DCubismCore.Moc.fromArrayBuffer(mocData);
+    if (!state.moc) throw new Error('无法加载 moc3');
+
+    state.model = Live2DCubismCore.Model.fromMoc(state.moc);
+    if (!state.model) throw new Error('无法创建模型');
+
+    // 加载纹理
+    const texturePaths = modelSettings.FileReferences.Textures;
+    for (const path of texturePaths) {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = () => reject(new Error(`纹理加载失败: ${path}`));
+        img.src = MODEL_PATH + path;
+      });
+
+      const texture = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, state.textureFlip);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.generateMipmap(gl.TEXTURE_2D);
+      state.textures.push({ texture, width: img.width, height: img.height });
+    }
+
+    // 加载表情
+    const expPaths = {
+      'Normal': 'expressions/Normal.exp3.json',
+      'Smile': 'expressions/Smile.exp3.json',
+      'Angry': 'expressions/Angry.exp3.json',
+      'Sad': 'expressions/Sad.exp3.json',
+      'Surprised': 'expressions/Surprised.exp3.json',
+      'Blushing': 'expressions/Blushing.exp3.json',
+    };
+    for (const [name, path] of Object.entries(expPaths)) {
+      try {
+        const expData = await loadJSON(MODEL_PATH + path);
+        state.expressions[name] = expData;
+      } catch (e) {
+        console.warn(`表情加载失败: ${name}`, e);
+      }
+    }
+    applyExpression('Normal');
+
+    // 加载动作
+    if (modelSettings.FileReferences.Motions) {
+      const motions = modelSettings.FileReferences.Motions;
+      for (const [group, entries] of Object.entries(motions)) {
+        const groupKey = group.charAt(0).toLowerCase() + group.slice(1);
+        if (!state.motions[groupKey]) state.motions[groupKey] = [];
+        for (const entry of entries) {
+          try {
+            const motionData = await loadJSON(MODEL_PATH + entry.File);
+            state.motions[groupKey].push({
+              data: motionData,
+              sound: entry.Sound ? MODEL_PATH + entry.Sound : null,
+            });
+          } catch (e) {
+            console.warn(`动作加载失败: ${entry.File}`, e);
+          }
+        }
+      }
+    }
+
+    // 启用物理效果（通过参数动画模拟）
+    startIdleLoop();
+    document.getElementById('loading').style.display = 'none';
+  }
+
+  // ===== 表情处理 =====
+  function applyExpression(name) {
+    state.currentExpression = name;
+    if (!state.model || !state.expressions[name]) return;
+    const exp = state.expressions[name];
+    if (exp.Parameters) {
+      for (const param of exp.Parameters) {
+        const idx = findParameterIndex(param.Id);
+        if (idx >= 0) {
+          Live2DCubismCore.Model.addParameterValueById(state.model, param.Id, param.Value || 0);
+        }
+      }
+    }
+    document.querySelectorAll('#controls .btn').forEach(b => {
+      b.classList.toggle('active', b.dataset.expr === name);
+    });
+  }
+
+  function findParameterIndex(id) {
+    const count = Live2DCubismCore.Model.getParameterCount(state.model);
+    for (let i = 0; i < count; i++) {
+      if (Live2DCubismCore.Model.getParameterId(state.model, i) === id) return i;
+    }
+    return -1;
+  }
+
+  // ===== 动作播放 =====
+  function playMotion(group) {
+    if (!state.model || !state.motions[group] || state.motions[group].length === 0) return;
+    const motions = state.motions[group];
+    const motion = motions[Math.floor(Math.random() * motions.length)];
+    state.currentMotion = motion;
+    state.motionStartTime = performance.now() / 1000;
+    state.motionDuration = motion.data.Meta ? motion.data.Meta.Duration || 0 : 0;
+    if (motion.sound) {
+      const audio = new Audio(motion.sound);
+      audio.volume = 0.6;
+      audio.play().catch(() => {});
+    }
+  }
+
+  function startIdleLoop() {
+    if (state.idleTimer) clearInterval(state.idleTimer);
+    playMotion('idle');
+    state.idleTimer = setInterval(() => {
+      if (!state.currentMotion || (performance.now()/1000 - state.motionStartTime) > state.motionDuration) {
+        playMotion('idle');
+      }
+    }, state.idleInterval);
+  }
+
+  // ===== 渲染 =====
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    state.canvasWidth = window.innerWidth;
+    state.canvasHeight = window.innerHeight;
+    canvas.width = state.canvasWidth * dpr;
+    canvas.height = state.canvasHeight * dpr;
+    canvas.style.width = state.canvasWidth + 'px';
+    canvas.style.height = state.canvasHeight + 'px';
+    gl.viewport(0, 0, canvas.width, canvas.height);
+  }
+
+  function render() {
+    if (!state.model) return;
+
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+
+    const t = performance.now() / 1000;
+    const dt = Math.min(t - (state._lastTime || t), 0.1);
+    state._lastTime = t;
+
+    // 更新模型参数
+    updateParameters(t, dt);
+
+    // 更新模型
+    Live2DCubismCore.Model.update(state.model);
+
+    // 计算投影矩阵
+    const aspect = state.canvasWidth / state.canvasHeight;
+    const proj = orthoMatrix(-aspect, aspect, -1, 1, -1, 1);
+    let modelMatrix = createMatrix();
+    modelMatrix = translateMatrix(modelMatrix, state.offsetX, state.offsetY, 0);
+    modelMatrix = scaleMatrix(modelMatrix, state.scale, state.scale, 1);
+    state.modelMatrix = modelMatrix;
+
+    const mvp = multiplyMatrices(proj, modelMatrix);
+
+    // 绘制模型
+    gl.useProgram(program);
+    gl.uniformMatrix4fv(uMatrix, false, mvp);
+
+    const drawableCount = Live2DCubismCore.Model.getDrawableCount(state.model);
+    const renderOrder = [];
+    for (let i = 0; i < drawableCount; i++) {
+      renderOrder.push({
+        index: i,
+        order: Live2DCubismCore.Model.getDrawableRenderOrder(state.model, i),
+      });
+    }
+    renderOrder.sort((a, b) => a.order - b.order);
+
+    for (const item of renderOrder) {
+      const i = item.index;
+      if (Live2DCubismCore.Model.getDrawableDynamicFlagIsVisible(state.model, i) === false) continue;
+
+      const textureIndex = Live2DCubismCore.Model.getDrawableTextureIndex(state.model, i);
+      if (textureIndex < 0 || textureIndex >= state.textures.length) continue;
+
+      const tex = state.textures[textureIndex];
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, tex.texture);
+      gl.uniform1i(uTexture, 0);
+
+      const vertexCount = Live2DCubismCore.Model.getDrawableVertexCount(state.model, i);
+      const vertexPositions = Live2DCubismCore.Model.getDrawableVertices(state.model, i);
+      const uvs = Live2DCubismCore.Model.getDrawableVertexUvs(state.model, i);
+      const indices = Live2DCubismCore.Model.getDrawableVertexIndices(state.model, i);
+      const indexCount = Live2DCubismCore.Model.getDrawableVertexIndexCount(state.model, i);
+
+      const posBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, vertexPositions, gl.DYNAMIC_DRAW);
+      gl.enableVertexAttribArray(aPosition);
+      gl.vertexAttribPointer(aPosition, 2, gl.FLOAT, false, 0, 0);
+
+      const uvBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, uvBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, uvs, gl.DYNAMIC_DRAW);
+      gl.enableVertexAttribArray(aTexCoord);
+      gl.vertexAttribPointer(aTexCoord, 2, gl.FLOAT, false, 0, 0);
+
+      const idxBuffer = gl.createBuffer();
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuffer);
+      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.DYNAMIC_DRAW);
+
+      const opacity = Live2DCubismCore.Model.getDrawableOpacity(state.model, i);
+      const multiply = Live2DCubismCore.Model.getDrawableMultiplyColor(state.model, i);
+      const screen = Live2DCubismCore.Model.getDrawableScreenColor(state.model, i);
+
+      gl.uniform4f(uBaseColor, 1, 1, 1, opacity);
+      gl.uniform4f(uMultiplyColor, multiply[0], multiply[1], multiply[2], multiply[3]);
+      gl.uniform4f(uScreenColor, screen[0], screen[1], screen[2], screen[3]);
+
+      gl.drawElements(gl.TRIANGLES, indexCount, gl.UNSIGNED_SHORT, 0);
+
+      gl.deleteBuffer(posBuffer);
+      gl.deleteBuffer(uvBuffer);
+      gl.deleteBuffer(idxBuffer);
+    }
+
+    requestAnimationFrame(render);
+  }
+
+  function updateParameters(t, dt) {
+    const model = state.model;
+    if (!model) return;
+
+    // 平滑追踪角度
+    const smooth = 0.12;
+    state.angles.x += (state.targetAngles.x - state.angles.x) * smooth;
+    state.angles.y += (state.targetAngles.y - state.angles.y) * smooth;
+    state.angles.z += (state.targetAngles.z - state.angles.z) * smooth;
+    state.bodyAngles.x += (state.targetBodyAngles.x - state.bodyAngles.x) * smooth;
+    state.bodyAngles.y += (state.targetBodyAngles.y - state.bodyAngles.y) * smooth;
+    state.bodyAngles.z += (state.targetBodyAngles.z - state.bodyAngles.z) * smooth;
+
+    // 设置参数
+    setParam('PARAM_ANGLE_X', state.angles.x);
+    setParam('PARAM_ANGLE_Y', state.angles.y);
+    setParam('PARAM_ANGLE_Z', state.angles.z);
+    setParam('PARAM_BODY_ANGLE_X', state.bodyAngles.x * 0.5);
+    setParam('PARAM_BODY_ANGLE_Y', state.bodyAngles.y * 0.5);
+    setParam('PARAM_BODY_ANGLE_Z', state.bodyAngles.z * 0.5);
+
+    // 眨眼
+    state.blinkTimer += dt;
+    const blinkCycle = 4.0;
+    const blinkPhase = state.blinkTimer % blinkCycle;
+    if (blinkPhase < 0.1) {
+      state.blinkState = blinkPhase / 0.1;
+    } else if (blinkPhase < 0.15) {
+      state.blinkState = 0;
+    } else if (blinkPhase < 0.25) {
+      state.blinkState = (blinkPhase - 0.15) / 0.1;
+    } else {
+      state.blinkState = 1;
+    }
+    setParam('PARAM_EYE_L_OPEN', state.blinkState);
+    setParam('PARAM_EYE_R_OPEN', state.blinkState);
+
+    // 呼吸
+    state.breathTimer += dt;
+    setParam('PARAM_BREATH', Math.sin(state.breathTimer * 1.5) * 0.5 + 0.5);
+
+    // 动作
+    if (state.currentMotion) {
+      const elapsed = t - state.motionStartTime;
+      if (elapsed <= state.motionDuration + 0.1) {
+        applyMotion(state.currentMotion.data, elapsed);
+      }
+    }
+  }
+
+  function setParam(id, value) {
+    const idx = findParameterIndex(id);
+    if (idx >= 0) {
+      Live2DCubismCore.Model.setParameterValueById(state.model, id, Math.max(0, Math.min(1, value)));
+    }
+  }
+
+  function applyMotion(motion, time) {
+    if (!motion || !motion.Curves) return;
+    for (const curve of motion.Curves) {
+      const id = curve.Id;
+      const segments = curve.Segments;
+      if (!segments || segments.length === 0) continue;
+      let value = segments[0];
+      if (segments.length >= 2) {
+        const duration = motion.Meta ? motion.Meta.Duration || 1 : 1;
+        const t = Math.max(0, Math.min(1, time / duration));
+        const idx = Math.min(Math.floor(t * (segments.length - 1)), segments.length - 2);
+        const localT = (t * (segments.length - 1)) - idx;
+        value = segments[idx] + (segments[idx + 1] - segments[idx]) * localT;
+      }
+      setParam(id, value);
+    }
+  }
+
+  // ===== 交互 =====
+  function getCanvasPos(e) {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: (e.clientX - rect.left) / rect.width * 2 - 1,
+      y: (e.clientY - rect.top) / rect.height * 2 - 1,
+    };
+  }
+
+  canvas.addEventListener('mousemove', (e) => {
+    const pos = getCanvasPos(e);
+    state.targetAngles.x = pos.x * 30;
+    state.targetAngles.y = -pos.y * 30;
+    state.targetAngles.z = pos.x * 15;
+    state.targetBodyAngles.x = pos.x * 10;
+    state.targetBodyAngles.y = -pos.y * 5;
+  });
+
+  canvas.addEventListener('mouseleave', () => {
+    state.targetAngles.x = 0;
+    state.targetAngles.y = 0;
+    state.targetAngles.z = 0;
+    state.targetBodyAngles.x = 0;
+    state.targetBodyAngles.y = 0;
+    state.targetBodyAngles.z = 0;
+  });
+
+  canvas.addEventListener('mousedown', (e) => {
+    state.dragStart = { x: e.clientX, y: e.clientY, time: Date.now() };
+    state.dragging = false;
+  });
+
+  canvas.addEventListener('mousemove', (e) => {
+    if (state.dragStart && !state.dragging) {
+      const dx = e.clientX - state.dragStart.x;
+      const dy = e.clientY - state.dragStart.y;
+      if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
+        state.dragging = true;
+      }
+    }
+  });
+
+  canvas.addEventListener('mouseup', (e) => {
+    if (!state.dragStart) return;
+    const dx = e.clientX - state.dragStart.x;
+    const dy = e.clientY - state.dragStart.y;
+    const elapsed = Date.now() - state.dragStart.time;
+
+    if (!state.dragging && elapsed < 300) {
+      // 点击 → Tap
+      playMotion('tap');
+    } else if (state.dragging) {
+      // 拖拽 → Flick
+      if (Math.abs(dx) > Math.abs(dy)) {
+        playMotion(dx > 0 ? 'flickRight' : 'flickLeft');
+      } else {
+        playMotion('flick');
+      }
+    }
+
+    state.dragStart = null;
+    state.dragging = false;
+  });
+
+  // 触屏支持
+  canvas.addEventListener('touchmove', (e) => {
+    e.preventDefault();
+    const pos = getCanvasPos(e.touches[0]);
+    state.targetAngles.x = pos.x * 30;
+    state.targetAngles.y = -pos.y * 30;
+    state.targetAngles.z = pos.x * 15;
+    state.targetBodyAngles.x = pos.x * 10;
+  }, { passive: false });
+
+  canvas.addEventListener('touchstart', (e) => {
+    const touch = e.touches[0];
+    state.dragStart = { x: touch.clientX, y: touch.clientY, time: Date.now() };
+    state.dragging = false;
+  });
+
+  canvas.addEventListener('touchend', (e) => {
+    if (!state.dragStart) return;
+    if (!state.dragging) {
+      playMotion('tap');
+    }
+    state.dragStart = null;
+    state.dragging = false;
+  });
+
+  // 表情按钮
+  document.querySelectorAll('#controls .btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      applyExpression(btn.dataset.expr);
+    });
+  });
+
+  // 键盘快捷键
+  window.addEventListener('keydown', (e) => {
+    switch(e.key.toLowerCase()) {
+      case '1': applyExpression('Normal'); break;
+      case '2': applyExpression('Smile'); break;
+      case '3': applyExpression('Angry'); break;
+      case '4': applyExpression('Sad'); break;
+      case '5': applyExpression('Surprised'); break;
+      case '6': applyExpression('Blushing'); break;
+      case 't': case ' ': playMotion('tap'); e.preventDefault(); break;
+      case 'f': playMotion('flick'); break;
+      case 's': playMotion('shake'); break;
+    }
+  });
+
+  // 鼠标滚轮缩放
+  canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    state.scale = Math.max(0.5, Math.min(3, state.scale - e.deltaY * 0.001));
+  }, { passive: false });
+
+  // ===== 启动 =====
+  resize();
+  window.addEventListener('resize', resize);
+
+  loadModel()
+    .then(() => {
+      console.log('✓ Haru 模型加载完成');
+      requestAnimationFrame(render);
+    })
+    .catch(err => {
+      console.error('模型加载失败:', err);
+      document.getElementById('loading').textContent = '加载失败: ' + err.message;
+    });
+
+})();
+</script>
+</body>
+</html>
