@@ -1,0 +1,1140 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Live2D Haru</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      font-family: 'Segoe UI', sans-serif;
+    }
+    canvas {
+      display: block;
+      max-width: 100vw;
+      max-height: 100vh;
+    }
+    #loading {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: #fff;
+      font-size: 18px;
+      z-index: 10;
+      pointer-events: none;
+      transition: opacity 0.5s;
+    }
+    #loading.hidden { opacity: 0; }
+    .spinner {
+      width: 40px;
+      height: 40px;
+      border: 3px solid rgba(255,255,255,0.2);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin: 0 auto 12px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div id="loading"><div class="spinner"></div>加载中...</div>
+  <canvas id="live2d"></canvas>
+
+  <!-- Live2D Cubism Core -->
+  <script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
+
+  <script>
+  // ==================== Cubism Framework ====================
+
+  // --- CubismFramework ---
+  const CubismFramework = (() => {
+    let _isStarted = false;
+    const _option = {};
+
+    return {
+      get CoreVersion() {
+        return Live2DCubismCore.Version;
+      },
+      get Version() {
+        return Live2DCubismCore.Version;
+      },
+      get Option() { return _option; },
+      startup(opts) {
+        if (_isStarted) return;
+        Object.assign(_option, opts || {});
+        _isStarted = true;
+      },
+      dispose() {
+        _isStarted = false;
+      },
+      initialize() {
+        // Framework initialized
+      },
+      isStarted() { return _isStarted; },
+      getLogFunction() { return null; },
+      CubismFramework: {
+        CoreVersion: Live2DCubismCore.Version,
+        Version: Live2DCubismCore.Version
+      }
+    };
+  })();
+
+  // --- CubismIdManager ---
+  class CubismIdManager {
+    constructor() { this._ids = new Map(); }
+    getId(str) {
+      if (!this._ids.has(str)) this._ids.set(str, str);
+      return this._ids.get(str);
+    }
+    isExist(str) { return this._ids.has(str); }
+  }
+  const _idManager = new CubismIdManager();
+
+  // --- CubismMatrix44 ---
+  class CubismMatrix44 {
+    constructor() {
+      this._tr = new Float32Array(16);
+      this.loadIdentity();
+    }
+    loadIdentity() {
+      const t = this._tr;
+      t.fill(0);
+      t[0] = t[5] = t[10] = t[15] = 1;
+    }
+    getArray() { return this._tr; }
+    setMatrix(m) { this._tr.set(m); }
+    multiply(a, b, dst) {
+      const d = dst || new Float32Array(16), _a = a, _b = b;
+      for (let i = 0; i < 4; i++)
+        for (let j = 0; j < 4; j++) {
+          d[i + j * 4] = _a[i] * _b[j * 4] + _a[i + 4] * _b[j * 4 + 1] +
+                          _a[i + 8] * _b[j * 4 + 2] + _a[i + 12] * _b[j * 4 + 3];
+        }
+      return d;
+    }
+    translate(x, y) {
+      this._tr[12] = this._tr[0] * x + this._tr[4] * y + this._tr[12];
+      this._tr[13] = this._tr[1] * x + this._tr[5] * y + this._tr[13];
+    }
+    scale(sx, sy) {
+      this._tr[0] *= sx; this._tr[1] *= sx;
+      this._tr[4] *= sy; this._tr[5] *= sy;
+    }
+    translateRelative(x, y) {
+      const t = new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, x,y,0,1]);
+      this.setMatrix(this.multiply(t, this._tr));
+    }
+  }
+
+  // --- CubismModelSettingJson ---
+  class CubismModelSettingJson {
+    constructor(json) {
+      this._json = json;
+      this._fileReferences = json.FileReferences || {};
+      this._groups = json.Groups || [];
+      this._hitAreas = json.HitAreas || [];
+    }
+    static loadFromJson(json) {
+      return new CubismModelSettingJson(typeof json === 'string' ? JSON.parse(json) : json);
+    }
+    getModelFileName() { return this._fileReferences.Moc || ''; }
+    getTextureCount() { return (this._fileReferences.Textures || []).length; }
+    getTextureFileName(index) { return (this._fileReferences.Textures || [])[index] || ''; }
+    getHitAreasCount() { return this._hitAreas.length; }
+    getId(index) { return (this._hitAreas[index] || {}).Id || ''; }
+    getName(index) { return (this._hitAreas[index] || {}).Name || ''; }
+    getMotionCount(groupName) {
+      const motions = (this._fileReferences.Motions || {})[groupName];
+      return (motions || []).length;
+    }
+    getMotionFileName(groupName, index) {
+      const motions = (this._fileReferences.Motions || {})[groupName];
+      return (motions && motions[index]) ? (motions[index].File || '') : '';
+    }
+    getMotionSoundFileName(groupName, index) {
+      const motions = (this._fileReferences.Motions || {})[groupName];
+      return (motions && motions[index]) ? (motions[index].Sound || '') : '';
+    }
+    getExpressionCount() {
+      return (this._fileReferences.Expressions || []).length;
+    }
+    getExpressionName(index) {
+      return (this._fileReferences.Expressions || [])[index] ? ((this._fileReferences.Expressions || [])[index].Name || '') : '';
+    }
+    getExpressionFileName(index) {
+      return (this._fileReferences.Expressions || [])[index] ? ((this._fileReferences.Expressions || [])[index].File || '') : '';
+    }
+    getPhysicsFileName() { return this._fileReferences.Physics || ''; }
+    getPoseFileName() { return this._fileReferences.Pose || ''; }
+    getDisplayInfoFileName() { return this._fileReferences.DisplayInfo || ''; }
+    getEyeBlinkParameterCount() {
+      const group = this._groups.find(g => g.Name === 'EyeBlink');
+      return group ? (group.Ids || []).length : 0;
+    }
+    getEyeBlinkParameterId(index) {
+      const group = this._groups.find(g => g.Name === 'EyeBlink');
+      return group ? (group.Ids || [])[index] || '' : '';
+    }
+    getLipSyncParameterCount() {
+      const group = this._groups.find(g => g.Name === 'LipSync');
+      return group ? (group.Ids || []).length : 0;
+    }
+    getLipSyncParameterId(index) {
+      const group = this._groups.find(g => g.Name === 'LipSync');
+      return group ? (group.Ids || [])[index] || '' : '';
+    }
+    getLayoutMap() {
+      return this._json.Layout || {};
+    }
+    getGroupCount() { return this._groups.length; }
+    getGroupName(index) { return (this._groups[index] || {}).Name || ''; }
+    getGroupTarget(index) { return (this._groups[index] || {}).Target || ''; }
+    getGroupIdCount(index) { return ((this._groups[index] || {}).Ids || []).length; }
+    getGroupId(index, idIndex) { return ((this._groups[index] || {}).Ids || [])[idIndex] || ''; }
+    getMotionGroupNames() { return Object.keys(this._fileReferences.Motions || {}); }
+  }
+
+  // --- CubismMoc ---
+  class CubismMoc {
+    constructor(moc) { this._moc = moc; }
+    static create(arrayBuffer) {
+      const moc = Live2DCubismCore.Moc.fromArrayBuffer(arrayBuffer);
+      if (!moc) throw new Error('Failed to create Moc');
+      return new CubismMoc(moc);
+    }
+    createModel() {
+      const model = Live2DCubismCore.Model.fromMoc(this._moc);
+      if (!model) throw new Error('Failed to create Model');
+      return new CubismModel(model);
+    }
+    delete() { this._moc = null; }
+  }
+
+  // --- CubismModel ---
+  class CubismModel {
+    constructor(model) {
+      this._model = model;
+      this._parameterValues = model.parameters.values;
+      this._parameterIds = model.parameters.ids;
+      this._partValues = model.parts.values;
+      this._partIds = model.parts.ids;
+      this._parameterCount = model.parameters.count;
+      this._partCount = model.parts.count;
+      this._canvasWidth = model.canvasinfo.CanvasWidth / 2;
+      this._canvasHeight = model.canvasinfo.CanvasHeight / 2;
+      this._pixelWidth = model.canvasinfo.PixelsPerUnit;
+      this._modelMatrix = model.canvasinfo.CanvasWidth;
+      this._modelCanvasWidth = model.canvasinfo.CanvasWidth;
+      this._modelCanvasHeight = model.canvasinfo.CanvasHeight;
+      this._modelPixelWidth = model.canvasinfo.PixelsPerUnit;
+      this._modelMatrixValue = model.canvasinfo.CanvasWidth;
+      this._opacity = 1.0;
+      this._parameters = model.parameters;
+      this._parts = model.parts;
+      this._drawables = model.drawables;
+    }
+    update() { this._model.update(); }
+    getParameterCount() { return this._parameterCount; }
+    getParameterValue(index) { return this._parameterValues[index]; }
+    setParameterValue(index, value, weight = 1.0) {
+      this._parameterValues[index] = weight * (value - this._parameterValues[index]) + this._parameterValues[index];
+    }
+    addParameterValue(index, value, weight = 1.0) {
+      this._parameterValues[index] += value * weight;
+    }
+    multiplyParameterValue(index, value, weight = 1.0) {
+      this._parameterValues[index] *= (1.0 + (value - 1.0) * weight);
+    }
+    getParameterIndex(id) {
+      for (let i = 0; i < this._parameterIds.length; i++)
+        if (this._parameterIds[i] === id) return i;
+      return -1;
+    }
+    getParameterId(index) { return this._parameterIds[index] || ''; }
+    getParameterCountEx() { return this._parameterCount; }
+    getParameterValueById(id) {
+      const idx = this.getParameterIndex(id);
+      return idx >= 0 ? this._parameterValues[idx] : 0;
+    }
+    setParameterValueById(id, value, weight = 1.0) {
+      const idx = this.getParameterIndex(id);
+      if (idx >= 0) this.setParameterValue(idx, value, weight);
+    }
+    addParameterValueById(id, value, weight = 1.0) {
+      const idx = this.getParameterIndex(id);
+      if (idx >= 0) this.addParameterValue(idx, value, weight);
+    }
+    getPartCount() { return this._partCount; }
+    getPartId(index) { return this._partIds[index] || ''; }
+    getPartIndex(id) {
+      for (let i = 0; i < this._partIds.length; i++)
+        if (this._partIds[i] === id) return i;
+      return -1;
+    }
+    getPartOpacity(index) { return this._partValues[index]; }
+    setPartOpacity(index, value) { this._partValues[index] = value; }
+    getPartOpacityById(id) {
+      const idx = this.getPartIndex(id);
+      return idx >= 0 ? this._partValues[idx] : 0;
+    }
+    setPartOpacityById(id, value) {
+      const idx = this.getPartIndex(id);
+      if (idx >= 0) this._partValues[idx] = value;
+    }
+    getCanvasWidth() { return this._canvasWidth; }
+    getCanvasHeight() { return this._canvasHeight; }
+    getPixelWidth() { return this._pixelWidth; }
+    getCanvasWidthEx() { return this._canvasWidth; }
+    getCanvasHeightEx() { return this._canvasHeight; }
+    getOpacity() { return this._opacity; }
+    setOpacity(v) { this._opacity = v; }
+    getDrawableCount() { return this._drawables.count; }
+    getDrawableId(index) { return this._drawables.ids[index]; }
+    getDrawableIndex(id) {
+      for (let i = 0; i < this._drawables.count; i++)
+        if (this._drawables.ids[i] === id) return i;
+      return -1;
+    }
+    getDrawableVertexCount(index) { return this._drawables.vertexCounts[index]; }
+    getDrawableVertexIndexCount(index) { return this._drawables.vertexIndexCounts[index]; }
+    getDrawableVertexPositions(index) { return this._drawables.vertexPositions[index]; }
+    getDrawableVertexUvs(index) { return this._drawables.vertexUvs[index]; }
+    getDrawableVertexIndices(index) { return this._drawables.vertexIndices[index]; }
+    getDrawableRenderOrders() { return this._drawables.renderOrders; }
+    getDrawableRenderOrder(index) { return this._drawables.renderOrders[index]; }
+    getDrawableOpacity(index) { return this._drawables.opacities[index]; }
+    getDrawableMaskCounts() { return this._drawables.maskCounts; }
+    getDrawableMaskCount(index) { return this._drawables.maskCounts[index]; }
+    getDrawableMasks() { return this._drawables.masks; }
+    getDrawableMasksByIndex(index) { return this._drawables.masks[index]; }
+    getDrawableConstantFlag(index) { return this._drawables.constantFlags[index]; }
+    getDrawableDynamicFlag(index) { return this._drawables.dynamicFlags[index]; }
+    getDrawableTextureIndex(index) { return this._drawables.textureIndices[index]; }
+    getDrawableBlendMode(index) { return this._drawables.blendModes[index]; }
+    getDrawableCulling(index) { return this._drawables.culling[index]; }
+    getDrawableInvertedMask(index) { return this._drawables.invertedMasks[index]; }
+    getModel() { return this._model; }
+    getModelCanvasWidth() { return this._modelCanvasWidth; }
+    getModelCanvasHeight() { return this._modelCanvasHeight; }
+    getModelPixelWidth() { return this._modelPixelWidth; }
+  }
+
+  // --- CubismRenderer_WebGL ---
+  class CubismRenderer_WebGL {
+    constructor() {
+      this._gl = null;
+      this._model = null;
+      this._clippingManager = null;
+      this._textures = [];
+      this._sortedDrawableIndexList = [];
+      this._matrix = new CubismMatrix44();
+      this._program = null;
+      this._aPosition = -1;
+      this._aTexCoord = -1;
+      this._uTexture = null;
+      this._uProjection = null;
+      this._uClipMatrix = null;
+      this._uOpacity = null;
+      this._uBaseColor = null;
+      this._uMultiplyColor = null;
+      this._uScreenColor = null;
+      this._maskTexture = null;
+      this._maskFramebuffer = null;
+    }
+
+    static create() { return new CubismRenderer_WebGL(); }
+
+    initialize(model, gl) {
+      this._model = model;
+      this._gl = gl || this._gl;
+      this._setupShaders();
+      this._sortedDrawableIndexList = [];
+      const count = model.getDrawableCount();
+      for (let i = 0; i < count; i++) this._sortedDrawableIndexList.push(i);
+      this._sortedDrawableIndexList.sort((a, b) => model.getDrawableRenderOrder(a) - model.getDrawableRenderOrder(b));
+    }
+
+    getModel() { return this._model; }
+    setMatrix(matrix) { this._matrix.setMatrix(matrix.getArray()); }
+    getMatrix() { return this._matrix; }
+    getGL() { return this._gl; }
+    setGL(gl) { this._gl = gl; }
+
+    _setupShaders() {
+      const gl = this._gl;
+      const vs = gl.createShader(gl.VERTEX_SHADER);
+      gl.shaderSource(vs, `
+        attribute vec2 aPosition;
+        attribute vec2 aTexCoord;
+        uniform mat4 uProjection;
+        uniform mat4 uClipMatrix;
+        varying vec2 vTexCoord;
+        varying vec4 vClipPos;
+        void main() {
+          gl_Position = uProjection * vec4(aPosition, 0.0, 1.0);
+          vClipPos = uClipMatrix * vec4(aPosition, 0.0, 1.0);
+          vTexCoord = aTexCoord;
+        }
+      `);
+      gl.compileShader(vs);
+
+      const fs = gl.createShader(gl.FRAGMENT_SHADER);
+      gl.shaderSource(fs, `
+        precision mediump float;
+        varying vec2 vTexCoord;
+        varying vec4 vClipPos;
+        uniform sampler2D uTexture;
+        uniform vec4 uBaseColor;
+        uniform vec4 uMultiplyColor;
+        uniform vec4 uScreenColor;
+        uniform float uOpacity;
+        void main() {
+          vec4 texColor = texture2D(uTexture, vTexCoord);
+          vec4 color = texColor * uBaseColor;
+          color.rgb = color.rgb + uMultiplyColor.rgb * uMultiplyColor.a;
+          color.rgb = color.rgb + uScreenColor.rgb * uScreenColor.a;
+          color.rgb = color.rgb * uMultiplyColor.rgb;
+          color.a *= uOpacity;
+          float clip = step(0.0, vClipPos.x) * step(0.0, vClipPos.y) * step(vClipPos.x, vClipPos.w) * step(vClipPos.y, vClipPos.w);
+          color.a *= clip;
+          gl_FragColor = color;
+        }
+      `);
+      gl.compileShader(fs);
+
+      this._program = gl.createProgram();
+      gl.attachShader(this._program, vs);
+      gl.attachShader(this._program, fs);
+      gl.linkProgram(this._program);
+      gl.useProgram(this._program);
+
+      this._aPosition = gl.getAttribLocation(this._program, 'aPosition');
+      this._aTexCoord = gl.getAttribLocation(this._program, 'aTexCoord');
+      this._uTexture = gl.getUniformLocation(this._program, 'uTexture');
+      this._uProjection = gl.getUniformLocation(this._program, 'uProjection');
+      this._uClipMatrix = gl.getUniformLocation(this._program, 'uClipMatrix');
+      this._uBaseColor = gl.getUniformLocation(this._program, 'uBaseColor');
+      this._uMultiplyColor = gl.getUniformLocation(this._program, 'uMultiplyColor');
+      this._uScreenColor = gl.getUniformLocation(this._program, 'uScreenColor');
+      this._uOpacity = gl.getUniformLocation(this._program, 'uOpacity');
+    }
+
+    bindTexture(index, texture) { this._textures[index] = texture; }
+    getBindedTextureId(index) { return this._textures[index] || null; }
+
+    drawModel() {
+      const gl = this._gl;
+      const model = this._model;
+      if (!model || !gl) return;
+
+      gl.useProgram(this._program);
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+
+      const projMat = new Float32Array([
+        2.0 / gl.canvas.width, 0, 0, 0,
+        0, -2.0 / gl.canvas.height, 0, 0,
+        0, 0, 1, 0,
+        -1.0, 1.0, 0, 1.0
+      ]);
+      gl.uniformMatrix4fv(this._uProjection, false, projMat);
+
+      const identity = new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]);
+
+      for (let i = 0; i < this._sortedDrawableIndexList.length; i++) {
+        const d = this._sortedDrawableIndexList[i];
+        const opacity = model.getDrawableOpacity(d);
+        if (opacity <= 0.001) continue;
+
+        const texIndex = model.getDrawableTextureIndex(d);
+        const maskCount = model.getDrawableMaskCount(d);
+        const tex = this._textures[texIndex];
+        if (!tex) continue;
+
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.uniform1i(this._uTexture, 0);
+
+        gl.uniformMatrix4fv(this._uClipMatrix, false, identity);
+        gl.uniform4f(this._uBaseColor, 1, 1, 1, 1);
+        gl.uniform4f(this._uMultiplyColor, 0, 0, 0, 0);
+        gl.uniform4f(this._uScreenColor, 0, 0, 0, 0);
+        gl.uniform1f(this._uOpacity, opacity);
+
+        const vertCount = model.getDrawableVertexCount(d);
+        const verts = model.getDrawableVertexPositions(d);
+        const uvs = model.getDrawableVertexUvs(d);
+        const indices = model.getDrawableVertexIndices(d);
+
+        const vBuf = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, vBuf);
+        gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW);
+        gl.enableVertexAttribArray(this._aPosition);
+        gl.vertexAttribPointer(this._aPosition, 2, gl.FLOAT, false, 0, 0);
+
+        const uvBuf = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, uvBuf);
+        gl.bufferData(gl.ARRAY_BUFFER, uvs, gl.DYNAMIC_DRAW);
+        gl.enableVertexAttribArray(this._aTexCoord);
+        gl.vertexAttribPointer(this._aTexCoord, 2, gl.FLOAT, false, 0, 0);
+
+        const iBuf = gl.createBuffer();
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, iBuf);
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.DYNAMIC_DRAW);
+
+        gl.drawElements(gl.TRIANGLES, indices.length, gl.UNSIGNED_SHORT, 0);
+
+        gl.deleteBuffer(vBuf);
+        gl.deleteBuffer(uvBuf);
+        gl.deleteBuffer(iBuf);
+      }
+    }
+
+    drawMesh(texture, indexCount, vertexCount, vertices, uvs, indices, opacity, blendMode, invertedMask) {
+      // Simplified draw - not used in this implementation
+    }
+  }
+
+  // --- CubismMotion ---
+  class CubismMotion {
+    constructor(motion) { this._motion = motion; }
+    static create(arrayBuffer) {
+      const motion = Live2DCubismCore.Motion.fromArrayBuffer(arrayBuffer);
+      if (!motion) throw new Error('Failed to create Motion');
+      return new CubismMotion(motion);
+    }
+    getFadeInTime() { return this._motion.fadeInTime; }
+    getFadeOutTime() { return this._motion.fadeOutTime; }
+    getDuration() { return this._motion.duration; }
+    getLoop() { return this._motion.loop; }
+    setLoop(loop) { this._motion.loop = loop; }
+    setEffectIds(eyeBlinkIds, lipSyncIds) {}
+    updateParameters(model, motionQueueEntry, deltaTimeSeconds) {
+      this._motion.update(
+        model.getModel(),
+        motionQueueEntry._userTimeSeconds,
+        motionQueueEntry._endTimeSeconds - motionQueueEntry._startTimeSeconds,
+        motionQueueEntry._fadeWeight,
+        false
+      );
+    }
+    isFinished() { return this._motion.isFinished(); }
+    setFinishedHandler(handler) { this._motion.setFinishedMotionHandler(handler); }
+    getMotion() { return this._motion; }
+  }
+
+  // --- CubismMotionQueueEntry ---
+  class CubismMotionQueueEntry {
+    constructor() {
+      this._autoDelete = false;
+      this._motion = null;
+      this._available = true;
+      this._finished = false;
+      this._started = false;
+      this._startTimeSeconds = -1;
+      this._fadeInStartTimeSeconds = 0;
+      this._endTimeSeconds = -1;
+      this._stateTimeSeconds = 0;
+      this._stateTimeSecondsCache = 0;
+      this._eventCustomData = null;
+      this._fadeWeight = 0;
+      this._userTimeSeconds = 0;
+    }
+    getFadeIn() { return this._motion ? this._motion.getFadeInTime() : 0; }
+    getFadeOut() { return this._motion ? this._motion.getFadeOutTime() : 0; }
+    getEndTime() { return this._endTimeSeconds; }
+    setEndTime(t) { this._endTimeSeconds = t; }
+    isStarted() { return this._started; }
+    setIsStarted(v) { this._started = v; }
+    isFinished() { return this._finished; }
+    setIsFinished(v) { this._finished = v; }
+    isAvailable() { return this._available; }
+    setIsAvailable(v) { this._available = v; }
+    setState(t) { this._stateTimeSeconds = t; this._userTimeSeconds = t; }
+    getState() { return this._stateTimeSeconds; }
+    getFadeWeight() { return this._fadeWeight; }
+    setFadeWeight(v) { this._fadeWeight = v; }
+    setEventCustomData(d) { this._eventCustomData = d; }
+    getEventCustomData() { return this._eventCustomData; }
+    getMotion() { return this._motion; }
+    setMotion(m) { this._motion = m; }
+  }
+
+  // --- CubismMotionQueueManager ---
+  class CubismMotionQueueManager {
+    constructor() {
+      this._userTimeSeconds = 0;
+      this._motions = [];
+      this._eventCallback = null;
+      this._eventCustomData = null;
+    }
+    startMotion(motion, autoDelete, userTimeSeconds) {
+      if (!motion) return null;
+      const entry = new CubismMotionQueueEntry();
+      entry._motion = motion;
+      entry._autoDelete = autoDelete;
+      entry._userTimeSeconds = userTimeSeconds || 0;
+      entry._startTimeSeconds = userTimeSeconds || 0;
+      entry._endTimeSeconds = (userTimeSeconds || 0) + motion.getDuration();
+      entry._started = true;
+      entry._available = false;
+      this._motions.push(entry);
+      return entry;
+    }
+    isFinished() {
+      return this._motions.every(m => m._finished);
+    }
+    isFinishedByIndex(index) {
+      return index < this._motions.length && this._motions[index]._finished;
+    }
+    stopAllMotions() {
+      this._motions.forEach(m => { m._finished = true; });
+    }
+    getCubismMotionQueueEntry(index) { return this._motions[index] || null; }
+    setEventCallback(cb, data) {
+      this._eventCallback = cb;
+      this._eventCustomData = data;
+    }
+    doUpdateMotion(model, userTimeSeconds) {
+      let updated = false;
+      for (let i = this._motions.length - 1; i >= 0; i--) {
+        const entry = this._motions[i];
+        if (entry._finished) {
+          this._motions.splice(i, 1);
+          continue;
+        }
+        if (!entry._started) {
+          entry._started = true;
+          entry._startTimeSeconds = userTimeSeconds;
+          entry._endTimeSeconds = userTimeSeconds + (entry._motion ? entry._motion.getDuration() : 0);
+        }
+        const fadeIn = entry._motion.getFadeInTime();
+        const fadeOut = entry._motion.getFadeOutTime();
+        const endTime = entry._endTimeSeconds;
+        const duration = entry._motion.getDuration();
+
+        let fadeWeight = entry._fadeWeight;
+        if (userTimeSeconds <= entry._startTimeSeconds + fadeIn) {
+          if (fadeIn > 0) fadeWeight = (userTimeSeconds - entry._startTimeSeconds) / fadeIn;
+          else fadeWeight = 1;
+        }
+        if (endTime - fadeOut <= userTimeSeconds) {
+          if (fadeOut > 0) fadeWeight = (endTime - userTimeSeconds) / fadeOut;
+          else fadeWeight = 0;
+        }
+        entry._fadeWeight = Math.max(0, Math.min(1, fadeWeight));
+
+        entry._stateTimeSeconds = userTimeSeconds - entry._startTimeSeconds;
+        entry._userTimeSeconds = userTimeSeconds - entry._startTimeSeconds;
+
+        if (entry._motion) {
+          entry._motion.updateParameters(model, entry, 0);
+        }
+
+        if (entry._stateTimeSeconds >= duration) {
+          entry._finished = true;
+        }
+        updated = true;
+      }
+      return updated;
+    }
+  }
+
+  // --- CubismEyeBlink ---
+  class CubismEyeBlink {
+    constructor() {
+      this._blinkingState = 0; // 0=Idle, 1=Closing, 2=Closed, 3=Opening
+      this._nextBlinkingTime = 0;
+      this._stateStartTimeSeconds = 0;
+      this._blinkingIntervalSeconds = 4.0;
+      this._closingSeconds = 0.1;
+      this._closedSeconds = 0.05;
+      this._openingSeconds = 0.15;
+      this._userTimeSeconds = 0;
+      this._ids = [];
+    }
+    static create(modelSetting) {
+      const blink = new CubismEyeBlink();
+      const count = modelSetting.getEyeBlinkParameterCount();
+      for (let i = 0; i < count; i++) {
+        blink._ids.push(modelSetting.getEyeBlinkParameterId(i));
+      }
+      return blink;
+    }
+    setBlinkingInterval(blinking) { this._blinkingIntervalSeconds = blinking; }
+    setBlinkingSettings(closing, closed, opening) {
+      this._closingSeconds = closing;
+      this._closedSeconds = closed;
+      this._openingSeconds = opening;
+    }
+    updateParameters(model, deltaTimeSeconds) {
+      this._userTimeSeconds += deltaTimeSeconds;
+      let value = 0;
+      switch (this._blinkingState) {
+        case 0: // Idle
+          if (this._userTimeSeconds >= this._nextBlinkingTime) {
+            this._blinkingState = 1;
+            this._stateStartTimeSeconds = this._userTimeSeconds;
+          }
+          value = 1;
+          break;
+        case 1: // Closing
+          {
+            const t = (this._userTimeSeconds - this._stateStartTimeSeconds) / this._closingSeconds;
+            if (t >= 1) {
+              this._blinkingState = 2;
+              this._stateStartTimeSeconds = this._userTimeSeconds;
+              value = 0;
+            } else {
+              value = 1 - t;
+            }
+          }
+          break;
+        case 2: // Closed
+          if (this._userTimeSeconds - this._stateStartTimeSeconds >= this._closedSeconds) {
+            this._blinkingState = 3;
+            this._stateStartTimeSeconds = this._userTimeSeconds;
+          }
+          value = 0;
+          break;
+        case 3: // Opening
+          {
+            const t = (this._userTimeSeconds - this._stateStartTimeSeconds) / this._openingSeconds;
+            if (t >= 1) {
+              this._blinkingState = 0;
+              this._nextBlinkingTime = this._userTimeSeconds + this._blinkingIntervalSeconds * (0.5 + Math.random());
+              value = 1;
+            } else {
+              value = t;
+            }
+          }
+          break;
+      }
+      this._ids.forEach(id => model.setParameterValueById(id, value));
+    }
+  }
+
+  // --- CubismBreath ---
+  class CubismBreath {
+    constructor() {
+      this._currentTime = 0;
+      this._breathParameters = [];
+    }
+    static create() { return new CubismBreath(); }
+    setParameters(breathParameters) {
+      this._breathParameters = breathParameters || [];
+    }
+    getParameters() { return this._breathParameters; }
+    updateParameters(model, deltaTimeSeconds) {
+      this._currentTime += deltaTimeSeconds;
+      const t = this._currentTime * 2.0 * Math.PI;
+      this._breathParameters.forEach((bp, i) => {
+        model.addParameterValueById(bp.parameterId, bp.offset + bp.peak * Math.sin(t / bp.cycle), bp.weight);
+      });
+    }
+  }
+
+  // --- CubismPose ---
+  class CubismPose {
+    constructor() { this._data = null; }
+    static create(arrayBuffer) {
+      const pose = new CubismPose();
+      const text = new TextDecoder().decode(arrayBuffer);
+      const json = JSON.parse(text);
+      pose._data = json;
+      return pose;
+    }
+    updateParameters(model, deltaTimeSeconds) {
+      if (!this._data) return;
+      const parts = this._data.Parts || [];
+      const fadeTime = 0.5;
+      parts.forEach(part => {
+        const groups = part.Groups || [];
+        const id = part.Id || '';
+        const link = (part.Link || []).map(l => l.Id || '');
+        const partIdx = model.getPartIndex(id);
+        if (partIdx < 0) return;
+        let value = 0;
+        link.forEach(linkId => {
+          const linkIdx = model.getParameterIndex(linkId);
+          if (linkIdx >= 0) value += model.getParameterValue(linkIdx);
+        });
+        value = Math.max(0, Math.min(1, value));
+        const current = model.getPartOpacity(partIdx);
+        const target = value;
+        const newVal = current + (target - current) * Math.min(deltaTimeSeconds / fadeTime, 1);
+        model.setPartOpacity(partIdx, newVal);
+      });
+    }
+  }
+
+  // --- CubismPhysics ---
+  class CubismPhysics {
+    constructor() { this._physics = null; }
+    static create(arrayBuffer) {
+      const physics = new CubismPhysics();
+      physics._physics = Live2DCubismCore.Physics.fromArrayBuffer(arrayBuffer);
+      return physics;
+    }
+    evaluate(model, deltaTimeSeconds) {
+      if (this._physics) {
+        this._physics.evaluate(model.getModel(), deltaTimeSeconds);
+      }
+    }
+    setOptions(opt) { if (this._physics) this._physics.options = opt; }
+  }
+
+  // --- CubismUserModel ---
+  class CubismUserModel {
+    constructor() {
+      this._moc = null;
+      this._model = null;
+      this._modelSetting = null;
+      this._renderer = null;
+      this._motionManager = new CubismMotionQueueManager();
+      this._eyeBlink = null;
+      this._breath = null;
+      this._pose = null;
+      this._physics = null;
+      this._expressionManager = null;
+      this._opacity = 1.0;
+      this._lipSync = true;
+      this._lastLipSyncValue = 0;
+      this._dragX = 0;
+      this._dragY = 0;
+      this._dragMgr = null;
+      this._initialized = false;
+      this._updating = false;
+      this._matrix = new CubismMatrix44();
+      this._modelMatrix = new CubismMatrix44();
+      this._w = 0;
+      this._h = 0;
+    }
+
+    loadModel(moc) {
+      this._moc = moc;
+      this._model = moc.createModel();
+      this._model.saveParameters();
+      this._createRenderer();
+      this.setupModel();
+    }
+
+    loadAssets(directory, fileName) {
+      const path = directory + fileName;
+      return fetch(path).then(r => r.json()).then(json => {
+        this._modelSetting = CubismModelSettingJson.loadFromJson(json);
+        return this._setupFromSetting(directory);
+      });
+    }
+
+    _setupFromSetting(directory) {
+      const setting = this._modelSetting;
+      const mocPath = directory + setting.getModelFileName();
+      const texPaths = [];
+      for (let i = 0; i < setting.getTextureCount(); i++) {
+        texPaths.push(directory + setting.getTextureFileName(i));
+      }
+      const physicsPath = setting.getPhysicsFileName() ? directory + setting.getPhysicsFileName() : null;
+      const posePath = setting.getPoseFileName() ? directory + setting.getPoseFileName() : null;
+
+      const promises = [];
+
+      // Load moc
+      promises.push(
+        fetch(mocPath).then(r => r.arrayBuffer()).then(buf => {
+          this._moc = CubismMoc.create(buf);
+          this._model = this._moc.createModel();
+          this._model.saveParameters();
+          this._createRenderer();
+          this.setupModel();
+        })
+      );
+
+      // Load textures
+      texPaths.forEach((texPath, idx) => {
+        promises.push(
+          new Promise(resolve => {
+            const img = new Image();
+            img.onload = () => {
+              const gl = this._renderer.getGL();
+              if (gl) {
+                const tex = gl.createTexture();
+                gl.bindTexture(gl.TEXTURE_2D, tex);
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+                // Generate mipmap if power of 2
+                if (isPowerOfTwo(img.width) && isPowerOfTwo(img.height)) {
+                  gl.generateMipmap(gl.TEXTURE_2D);
+                } else {
+                  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+                }
+                this._renderer.bindTexture(idx, tex);
+              }
+              resolve();
+            };
+            img.src = texPath;
+          })
+        );
+      });
+
+      // Load physics
+      if (physicsPath) {
+        promises.push(
+          fetch(physicsPath).then(r => r.arrayBuffer()).then(buf => {
+            this._physics = CubismPhysics.create(buf);
+          })
+        );
+      }
+
+      // Load pose
+      if (posePath) {
+        promises.push(
+          fetch(posePath).then(r => r.arrayBuffer()).then(buf => {
+            this._pose = CubismPose.create(buf);
+          })
+        );
+      }
+
+      return Promise.all(promises);
+    }
+
+    _createRenderer() {
+      if (this._renderer) return;
+      this._renderer = CubismRenderer_WebGL.create();
+      this._renderer.initialize(this._model);
+    }
+
+    setupModel() {
+      this._initialized = true;
+      if (this._modelSetting) {
+        // Setup eye blink
+        const blinkCount = this._modelSetting.getEyeBlinkParameterCount();
+        if (blinkCount > 0) {
+          this._eyeBlink = CubismEyeBlink.create(this._modelSetting);
+        }
+
+        // Setup breath
+        this._breath = CubismBreath.create();
+        this._breath.setParameters([
+          { parameterId: 'PARAM_ANGLE_X', offset: 0, peak: 0.5, cycle: 3.23, weight: 0.5 },
+          { parameterId: 'PARAM_ANGLE_Y', offset: 0, peak: 0.5, cycle: 4.12, weight: 0.4 },
+          { parameterId: 'PARAM_ANGLE_Z', offset: 0, peak: 0.5, cycle: 3.67, weight: 0.4 },
+          { parameterId: 'PARAM_BODY_ANGLE_X', offset: 0, peak: 0.5, cycle: 3.23, weight: 0.5 },
+          { parameterId: 'PARAM_BODY_ANGLE_Y', offset: 0, peak: 0.5, cycle: 4.12, weight: 0.4 },
+          { parameterId: 'PARAM_BODY_ANGLE_Z', offset: 0, peak: 0.5, cycle: 3.67, weight: 0.4 },
+          { parameterId: 'PARAM_BREATH', offset: 0.5, peak: 0.5, cycle: 3.23, weight: 0.5 },
+        ]);
+      }
+    }
+
+    update() {
+      if (!this._initialized) return;
+      const deltaTimeSeconds = 1.0 / 60.0;
+
+      this._model.loadParameters();
+
+      // Update motion
+      if (this._motionManager) {
+        this._motionManager.doUpdateMotion(this._model, this._motionManager._userTimeSeconds || 0);
+      }
+
+      // Save and restore parameters for motion
+      this._model.saveParameters();
+
+      // Eye blink
+      if (this._eyeBlink) {
+        this._eyeBlink.updateParameters(this._model, deltaTimeSeconds);
+      }
+
+      // Breath
+      if (this._breath) {
+        this._model.setParameterValueById('PARAM_ANGLE_X', 0, 0);
+        this._model.setParameterValueById('PARAM_ANGLE_Y', 0, 0);
+        this._model.setParameterValueById('PARAM_ANGLE_Z', 0, 0);
+        this._model.setParameterValueById('PARAM_BODY_ANGLE_X', 0, 0);
+        this._model.setParameterValueById('PARAM_BODY_ANGLE_Y', 0, 0);
+        this._model.setParameterValueById('PARAM_BODY_ANGLE_Z', 0, 0);
+        this._model.setParameterValueById('PARAM_BREATH', 0, 0);
+        this._breath.updateParameters(this._model, deltaTimeSeconds);
+      }
+
+      // Physics
+      if (this._physics) {
+        this._physics.evaluate(this._model, deltaTimeSeconds);
+      }
+
+      // Pose
+      if (this._pose) {
+        this._pose.updateParameters(this._model, deltaTimeSeconds);
+      }
+
+      this._model.update();
+      this._model.saveParameters();
+    }
+
+    draw(matrix) {
+      if (!this._model || !this._renderer) return;
+      this._matrix.setMatrix(matrix.getArray());
+      this._renderer.setMatrix(this._matrix);
+      this._renderer.drawModel();
+    }
+
+    getModel() { return this._model; }
+    getRenderer() { return this._renderer; }
+    getModelSetting() { return this._modelSetting; }
+    getMoc() { return this._moc; }
+    getMotionManager() { return this._motionManager; }
+    setOpacity(v) { this._opacity = v; }
+    getOpacity() { return this._opacity; }
+    getModelMatrix() { return this._modelMatrix; }
+    getModelCanvasWidth() { return this._model ? this._model.getModelCanvasWidth() : 0; }
+    getModelCanvasHeight() { return this._model ? this._model.getModelCanvasHeight() : 0; }
+    getModelPixelWidth() { return this._model ? this._model.getModelPixelWidth() : 0; }
+  }
+
+  function isPowerOfTwo(x) { return (x & (x - 1)) === 0; }
+
+  // ==================== Main Application ====================
+
+  const MODEL_BASE = 'https://cdn.jsdelivr.net/gh/Qing-Feng-123/live2Dsample@demo2/runtime/';
+  const MODEL_FILE = 'haru.model3.json';
+
+  const canvas = document.getElementById('live2d');
+  const loadingEl = document.getElementById('loading');
+
+  function resizeCanvas() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+  }
+  window.addEventListener('resize', resizeCanvas);
+  resizeCanvas();
+
+  const gl = canvas.getContext('webgl', {
+    alpha: true,
+    premultipliedAlpha: true,
+    antialias: true
+  });
+
+  if (!gl) {
+    loadingEl.textContent = 'WebGL 不受支持，请使用现代浏览器';
+    throw new Error('WebGL not supported');
+  }
+
+  gl.clearColor(0, 0, 0, 0);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+
+  const userModel = new CubismUserModel();
+
+  // Set up renderer GL
+  const renderer = userModel.getRenderer();
+  renderer.setGL(gl);
+
+  let lastTime = performance.now();
+  let idleMotionIndex = 0;
+  let idleMotionTimer = 0;
+  const IDLE_INTERVAL = 5.0; // seconds between idle motions
+
+  async function init() {
+    try {
+      // Load model assets
+      await userModel.loadAssets(MODEL_BASE, MODEL_FILE);
+
+      // Load idle motions
+      const setting = userModel.getModelSetting();
+      const idleCount = setting.getMotionCount('Idle');
+      const idleMotions = [];
+      for (let i = 0; i < idleCount; i++) {
+        const motionPath = MODEL_BASE + setting.getMotionFileName('Idle', i);
+        const buf = await fetch(motionPath).then(r => r.arrayBuffer());
+        const motion = CubismMotion.create(buf);
+        motion.setLoop(false);
+        idleMotions.push(motion);
+      }
+
+      // Start first idle motion
+      if (idleMotions.length > 0) {
+        userModel.getMotionManager().startMotion(
+          idleMotions[Math.floor(Math.random() * idleMotions.length)],
+          false,
+          performance.now() / 1000
+        );
+      }
+
+      loadingEl.classList.add('hidden');
+
+      // Store idle motions for later use
+      userModel._idleMotions = idleMotions;
+
+      // Start render loop
+      requestAnimationFrame(renderLoop);
+    } catch (err) {
+      loadingEl.textContent = '加载失败: ' + err.message;
+      console.error(err);
+    }
+  }
+
+  function renderLoop(now) {
+    const deltaTime = Math.min((now - lastTime) / 1000, 0.1);
+    lastTime = now;
+
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.viewport(0, 0, canvas.width, canvas.height);
+
+    // Update model
+    userModel.update();
+
+    // Idle motion management
+    const motionMgr = userModel.getMotionManager();
+    motionMgr._userTimeSeconds = (motionMgr._userTimeSeconds || 0) + deltaTime;
+
+    if (motionMgr.isFinished() && userModel._idleMotions && userModel._idleMotions.length > 0) {
+      idleMotionTimer += deltaTime;
+      if (idleMotionTimer >= IDLE_INTERVAL) {
+        idleMotionTimer = 0;
+        const randomMotion = userModel._idleMotions[Math.floor(Math.random() * userModel._idleMotions.length)];
+        motionMgr.startMotion(randomMotion, false, now / 1000);
+      }
+    }
+
+    // Draw model
+    const projection = new CubismMatrix44();
+    const model = userModel.getModel();
+    if (model) {
+      const modelWidth = model.getModelCanvasWidth();
+      const modelHeight = model.getModelCanvasHeight();
+      const aspect = modelWidth / modelHeight;
+      const screenAspect = canvas.width / canvas.height;
+
+      let scaleX, scaleY;
+      if (screenAspect > aspect) {
+        scaleY = canvas.height / modelHeight;
+        scaleX = scaleY * aspect;
+      } else {
+        scaleX = canvas.width / modelWidth;
+        scaleY = scaleX / aspect;
+      }
+
+      projection.scale(scaleX, scaleY);
+      projection.translate(-1, -1);
+    }
+
+    userModel.draw(projection);
+
+    requestAnimationFrame(renderLoop);
+  }
+
+  init();
+  </script>
+</body>
+</html>
