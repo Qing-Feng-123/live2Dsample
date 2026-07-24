@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Live2D Haru</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 100vw; height: 100vh; overflow: hidden;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+      display: flex; align-items: center; justify-content: center;
+      font-family: 'Segoe UI', sans-serif;
+    }
+    canvas { display: block; }
+    #loading {
+      position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
+      color: #fff; font-size: 18px; text-align: center; z-index: 10;
+    }
+    #loading .spinner {
+      width: 40px; height: 40px; margin: 0 auto 12px;
+      border: 3px solid rgba(255,255,255,0.3); border-top-color: #fff;
+      border-radius: 50%; animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #credit {
+      position: fixed; bottom: 12px; right: 16px;
+      color: rgba(255,255,255,0.35); font-size: 12px; z-index: 5;
+    }
+  </style>
+</head>
+<body>
+  <div id="loading"><div class="spinner"></div>模型加载中...</div>
+  <div id="credit">Haru &copy; Live2D Inc. | Cubism SDK for Web</div>
+
+  <!-- ==================== CDN 库 ==================== -->
+  <!-- PixiJS (渲染引擎) -->
+  <script src="https://cdn.jsdelivr.net/npm/pixi.js@7.3.3/dist/pixi.min.js"></script>
+  <!-- Live2D Cubism Core (官方 CDN) -->
+  <script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
+  <!-- pixi-live2d-display (Live2D 框架层) -->
+  <script src="https://cdn.jsdelivr.net/npm/pixi-live2d-display@0.5.0/dist/index.min.js"></script>
+
+  <script>
+  // ============ 模型路径配置 ============
+  // 本地开发环境
+  const MODEL_BASE = 'runtime/';
+  // 生产环境 (jsDelivr) — 替换 YOUR_USERNAME 和 YOUR_REPO
+  // const MODEL_BASE = 'https://cdn.jsdelivr.net/gh/YOUR_USERNAME/YOUR_REPO@demo2/runtime/';
+
+  (async function() {
+    const loadingEl = document.getElementById('loading');
+
+    try {
+      // 检查依赖
+      if (typeof PIXI === 'undefined') throw new Error('PixiJS 未加载');
+      if (typeof PIXI.live2d === 'undefined') throw new Error('pixi-live2d-display 未加载');
+
+      // 注册 Live2D Cubism Core 到 PIXI.live2d
+      PIXI.live2d.config.cubismCore = window.Live2DCubismCore;
+
+      // 创建 PixiJS 应用
+      const app = new PIXI.Application({
+        resizeTo: window,
+        backgroundAlpha: 0,
+        antialias: true,
+        resolution: window.devicePixelRatio || 1,
+        autoDensity: true,
+      });
+      document.body.appendChild(app.view);
+
+      // 加载 Live2D 模型
+      const modelPath = MODEL_BASE + 'haru.model3.json';
+      const model = await PIXI.live2d.Live2DModel.from(modelPath, {
+        autoInteract: false, // 不设置交互
+      });
+
+      // 缩放模型以适应屏幕
+      const scaleX = (app.screen.width * 0.85) / model.width;
+      const scaleY = (app.screen.height * 0.85) / model.height;
+      const scale = Math.min(scaleX, scaleY);
+      model.scale.set(scale);
+      model.anchor.set(0.5, 0.5);
+      model.x = app.screen.width / 2;
+      model.y = app.screen.height / 2;
+
+      app.stage.addChild(model);
+
+      // 窗口大小调整
+      window.addEventListener('resize', () => {
+        const sX = (app.screen.width * 0.85) / model.internalModel.width;
+        const sY = (app.screen.height * 0.85) / model.internalModel.height;
+        const s = Math.min(sX, sY);
+        model.scale.set(s);
+        model.x = app.screen.width / 2;
+        model.y = app.screen.height / 2;
+      });
+
+      // 隐藏加载提示
+      loadingEl.style.display = 'none';
+      console.log('Live2D Haru 已就绪');
+
+    } catch (err) {
+      loadingEl.innerHTML = '<div style="color:#ff6b6b">加载失败</div><div style="font-size:14px;margin-top:8px">' + err.message + '</div>';
+      console.error(err);
+    }
+  })();
+  </script>
+</body>
+</html>
