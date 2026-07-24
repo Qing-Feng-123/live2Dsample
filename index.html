@@ -1,0 +1,824 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Live2D Haru - Interactive Demo</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    overflow: hidden;
+    height: 100vh; width: 100vw;
+    user-select: none; -webkit-user-select: none;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: none;
+  }
+  #canvas-container {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    display: flex; align-items: center; justify-content: center;
+  }
+  canvas { display: block; cursor: grab; }
+  canvas:active { cursor: grabbing; }
+
+  #controls {
+    position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 12px; flex-wrap: wrap; justify-content: center;
+    z-index: 10; padding: 0 20px;
+  }
+  .btn {
+    padding: 10px 22px; border: 2px solid rgba(255,255,255,0.25);
+    border-radius: 25px; background: rgba(255,255,255,0.08);
+    color: #fff; font-size: 15px; cursor: pointer;
+    transition: all 0.3s ease; backdrop-filter: blur(10px);
+    white-space: nowrap; letter-spacing: 0.5px;
+  }
+  .btn:hover {
+    background: rgba(255,255,255,0.2); border-color: rgba(255,255,255,0.5);
+    transform: translateY(-2px); box-shadow: 0 8px 25px rgba(0,0,0,0.3);
+  }
+  .btn:active { transform: translateY(0); background: rgba(255,255,255,0.3); }
+  .btn.active {
+    background: rgba(100, 180, 255, 0.3); border-color: rgba(100, 180, 255, 0.7);
+    box-shadow: 0 0 20px rgba(100, 180, 255, 0.3);
+  }
+
+  #info {
+    position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+    color: rgba(255,255,255,0.7); font-size: 13px; letter-spacing: 1px;
+    z-index: 10; text-align: center; pointer-events: none;
+  }
+  #info span {
+    display: inline-block; background: rgba(255,255,255,0.1);
+    padding: 6px 16px; border-radius: 20px; backdrop-filter: blur(10px);
+  }
+
+  #loading {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    color: #fff; font-size: 18px; z-index: 100; text-align: center;
+    transition: opacity 0.5s;
+  }
+  #loading.hidden { opacity: 0; pointer-events: none; }
+  .spinner {
+    width: 40px; height: 40px; border: 3px solid rgba(255,255,255,0.2);
+    border-top-color: #fff; border-radius: 50%;
+    animation: spin 0.8s linear infinite; margin: 0 auto 15px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  @media (max-width: 600px) {
+    .btn { padding: 8px 16px; font-size: 13px; }
+    #controls { bottom: 20px; gap: 8px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="loading"><div class="spinner"></div><div>Loading Haru...</div></div>
+<div id="info"><span>Drag to move &nbsp;|&nbsp; Click for motion &nbsp;|&nbsp; Scroll to zoom</span></div>
+<div id="canvas-container"><canvas id="canvas"></canvas></div>
+<div id="controls">
+  <button class="btn" data-motion="Tap">Tap</button>
+  <button class="btn" data-motion="Flick">Flick</button>
+  <button class="btn" data-motion="Shake">Shake</button>
+  <button class="btn" data-expr="Smile">Smile</button>
+  <button class="btn" data-expr="Angry">Angry</button>
+  <button class="btn" data-expr="Sad">Sad</button>
+  <button class="btn" data-expr="Surprised">Surprised</button>
+  <button class="btn" data-expr="Blushing">Blushing</button>
+  <button class="btn" id="btn-reset">Reset</button>
+</div>
+
+<script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
+<script>
+// ============ Live2D Cubism 4 Web Viewer ============
+const CDN_BASE = 'https://cdn.jsdelivr.net/gh/Qing-Feng-123/live2Dsample@demo2/runtime/';
+const MODEL_JSON = CDN_BASE + 'haru.model3.json';
+
+// ---- Globals ----
+const canvas = document.getElementById('canvas');
+let gl;
+
+// ---- Shader sources ----
+const VS_SRC = `
+attribute vec2 a_position;
+attribute vec2 a_texCoord;
+varying vec2 v_texCoord;
+void main() {
+  gl_Position = vec4(a_position, 0.0, 1.0);
+  v_texCoord = a_texCoord;
+}`;
+
+const FS_MASK_SETUP = `
+precision mediump float;
+varying vec2 v_texCoord;
+uniform sampler2D u_texture;
+uniform vec4 u_channelFlag;
+void main() {
+  vec4 c = texture2D(u_texture, v_texCoord);
+  gl_FragColor = c * u_channelFlag;
+}`;
+
+const FS_MASKED = `
+precision mediump float;
+varying vec2 v_texCoord;
+uniform sampler2D u_texture;
+uniform sampler2D u_mask;
+uniform vec4 u_channelFlag;
+uniform vec4 u_baseColor;
+void main() {
+  vec4 c = texture2D(u_texture, v_texCoord);
+  vec4 m = texture2D(u_mask, v_texCoord);
+  float a = dot(m, u_channelFlag);
+  gl_FragColor = c * a * u_baseColor;
+}`;
+
+const FS_MASKED_INV = `
+precision mediump float;
+varying vec2 v_texCoord;
+uniform sampler2D u_texture;
+uniform sampler2D u_mask;
+uniform vec4 u_channelFlag;
+uniform vec4 u_baseColor;
+void main() {
+  vec4 c = texture2D(u_texture, v_texCoord);
+  vec4 m = texture2D(u_mask, v_texCoord);
+  float a = dot(m, u_channelFlag);
+  gl_FragColor = c * (1.0 - a) * u_baseColor;
+}`;
+
+const FS_NORMAL = `
+precision mediump float;
+varying vec2 v_texCoord;
+uniform sampler2D u_texture;
+uniform vec4 u_baseColor;
+void main() {
+  gl_FragColor = texture2D(u_texture, v_texCoord) * u_baseColor;
+}`;
+
+// ---- Compile/Link helpers ----
+function compileShader(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    console.error('Shader error:', gl.getShaderInfoLog(s));
+    gl.deleteShader(s);
+    return null;
+  }
+  return s;
+}
+function linkProgram(vs, fs) {
+  const p = gl.createProgram();
+  gl.attachShader(p, vs); gl.attachShader(p, fs);
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    console.error('Link error:', gl.getProgramInfoLog(p));
+    return null;
+  }
+  return p;
+}
+
+// ---- Matrix helpers ----
+function mat4Mul(a, b) {
+  const o = new Float32Array(16);
+  for (let i = 0; i < 4; i++)
+    for (let j = 0; j < 4; j++) {
+      o[i+j*4] = a[i]*b[j*4] + a[i+4]*b[j*4+1] + a[i+8]*b[j*4+2] + a[i+12]*b[j*4+3];
+    }
+  return o;
+}
+function mat4Ortho(l, r, b, t, n, f) {
+  const o = new Float32Array(16);
+  o[0]=2/(r-l); o[5]=2/(t-b); o[10]=-2/(f-n);
+  o[12]=-(r+l)/(r-l); o[13]=-(t+b)/(t-b); o[14]=-(f+n)/(f-n); o[15]=1;
+  return o;
+}
+
+// ---- Data loading ----
+async function loadBytes(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(url + ' => ' + r.status);
+  return new Uint8Array(await r.arrayBuffer());
+}
+async function loadJSON(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(url + ' => ' + r.status);
+  return r.json();
+}
+function loadTexture(url) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.generateMipmap(gl.TEXTURE_2D);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+      resolve(tex);
+    };
+    img.onerror = () => reject(new Error('Texture load failed: ' + url));
+    img.src = url;
+  });
+}
+
+// ---- Cubism Model ----
+class CubismModel {
+  constructor() {
+    this._moc = null;
+    this._model = null;
+    this._textures = [];
+    this._motions = {};
+    this._expressions = {};
+    this._physicsSettings = null;
+    this._physicsParams = {};
+    this._currentMotion = null;
+    this._opacity = 1.0;
+    this._drawableCount = 0;
+    this._parameterIds = [];
+    this._partIds = [];
+    this._drawableRenderOrders = [];
+    this._sortedDrawIndices = [];
+  }
+
+  async load(modelJsonUrl) {
+    const json = await loadJSON(modelJsonUrl);
+    const base = modelJsonUrl.substring(0, modelJsonUrl.lastIndexOf('/') + 1);
+
+    // Moc
+    const mocBytes = await loadBytes(base + json.FileReferences.Moc);
+    this._moc = Live2DCubismCore.Moc.fromArrayBuffer(mocBytes.buffer);
+    if (!this._moc) throw new Error('Moc create failed');
+    this._model = Live2DCubismCore.Model.fromMoc(this._moc);
+    if (!this._model) throw new Error('Model create failed');
+
+    // Textures
+    if (json.FileReferences.Textures) {
+      for (const p of json.FileReferences.Textures) {
+        this._textures.push(await loadTexture(base + p));
+      }
+    }
+
+    // Physics
+    if (json.FileReferences.Physics) {
+      try {
+        this._physicsSettings = await loadJSON(base + json.FileReferences.Physics);
+      } catch (e) { console.warn('Physics:', e); }
+    }
+
+    // Pose
+    if (json.FileReferences.Pose) {
+      try {
+        this._poseData = await loadJSON(base + json.FileReferences.Pose);
+      } catch (e) { console.warn('Pose:', e); }
+    }
+
+    // Expressions
+    if (json.FileReferences.Expressions) {
+      for (const e of json.FileReferences.Expressions) {
+        try {
+          this._expressions[e.Name] = await loadJSON(base + e.File);
+        } catch (err) { console.warn('Expr:', e.Name, err); }
+      }
+    }
+
+    // Motions
+    if (json.FileReferences.Motions) {
+      for (const [group, arr] of Object.entries(json.FileReferences.Motions)) {
+        this._motions[group] = [];
+        for (const m of arr) {
+          try {
+            const mj = await loadJSON(base + m.File);
+            this._motions[group].push({
+              json: mj,
+              sound: m.Sound ? base + m.Sound : null
+            });
+          } catch (err) { console.warn('Motion:', m.File, err); }
+        }
+      }
+    }
+
+    // Setup drawable info
+    this._drawableCount = this._model.getDrawableCount();
+    this._drawableRenderOrders = new Int32Array(this._drawableCount);
+    this._sortedDrawIndices = [];
+    for (let i = 0; i < this._drawableCount; i++) {
+      this._drawableRenderOrders[i] = this._model.getDrawableRenderOrder(i);
+      this._sortedDrawIndices.push(i);
+    }
+    this._sortedDrawIndices.sort((a, b) => this._drawableRenderOrders[a] - this._drawableRenderOrders[b]);
+
+    // Parameters
+    for (let i = 0; i < this._model.getParameterCount(); i++) {
+      this._parameterIds.push(this._model.getParameterId(i));
+    }
+
+    // Parts
+    for (let i = 0; i < this._model.getPartCount(); i++) {
+      this._partIds.push(this._model.getPartId(i));
+    }
+
+    console.log('Model loaded:', this._drawableCount, 'drawables,',
+      this._parameterIds.length, 'params,',
+      Object.keys(this._motions).length, 'motion groups,',
+      Object.keys(this._expressions).length, 'expressions');
+  }
+
+  // ---- Motion ----
+  startMotion(group, index) {
+    const motions = this._motions[group];
+    if (!motions || !motions.length) return;
+    const idx = (index !== undefined) ? index : Math.floor(Math.random() * motions.length);
+    const m = motions[idx % motions.length];
+    const meta = m.json.Meta || {};
+    this._currentMotion = {
+      curves: m.json.Curves || [],
+      startTime: performance.now() / 1000,
+      duration: meta.Duration || 3,
+      fadeIn: meta.FadeInTime || 0.3,
+      fadeOut: meta.FadeOutTime || 0.3,
+      sound: m.sound,
+    };
+    if (m.sound) {
+      try { new Audio(m.sound).play().catch(() => {}); } catch (e) {}
+    }
+  }
+
+  // ---- Expression ----
+  setExpression(name) {
+    if (!this._model || !this._expressions[name]) return;
+    const params = this._expressions[name];
+    // Reset all expression params
+    const allIds = new Set();
+    for (const e of Object.values(this._expressions))
+      for (const p of e.Parameters) allIds.add(p.Id);
+    for (const id of allIds)
+      this._model.setParameterValueById(id, 0, 1.0);
+    // Apply target expression
+    for (const p of params.Parameters)
+      this._model.setParameterValueById(p.Id, p.Value, 1.0);
+    document.querySelectorAll('[data-expr]').forEach(b => b.classList.toggle('active', b.dataset.expr === name));
+  }
+  resetExpression() {
+    if (!this._model) return;
+    const allIds = new Set();
+    for (const e of Object.values(this._expressions))
+      for (const p of e.Parameters) allIds.add(p.Id);
+    for (const id of allIds)
+      this._model.setParameterValueById(id, 0, 1.0);
+    document.querySelectorAll('[data-expr]').forEach(b => b.classList.remove('active'));
+  }
+
+  // ---- Update ----
+  update(dt) {
+    if (!this._model) return;
+    // Motion
+    if (this._currentMotion) {
+      const elapsed = performance.now() / 1000 - this._currentMotion.startTime;
+      const dur = this._currentMotion.duration;
+      const fi = this._currentMotion.fadeIn;
+      const fo = this._currentMotion.fadeOut;
+      if (elapsed < dur + fo) {
+        let w = 1.0;
+        if (elapsed < fi) w = elapsed / fi;
+        else if (elapsed > dur) w = 1.0 - (elapsed - dur) / fo;
+        w = Math.max(0, Math.min(1, w));
+        const t = Math.min(elapsed, dur);
+        for (const c of this._currentMotion.curves) {
+          const v = this._evalCurve(c, t);
+          this._model.setParameterValueById(c.Id, v, w);
+        }
+      } else {
+        this._currentMotion = null;
+      }
+    }
+    // Physics
+    this._updatePhysics(dt);
+    // Pose
+    if (this._poseData) {
+      for (const g of this._poseData.Groups || []) {
+        for (const l of g.Link || []) {
+          this._model.setPartOpacityById(l.Id, l.Opacity || 1);
+        }
+      }
+    }
+    this._model.update();
+  }
+
+  _evalCurve(c, t) {
+    if (!c.Segments || !c.Segments.length) return 0;
+    const s = c.Segments;
+    if (t <= s[0].Time) return s[0].Value;
+    if (t >= s[s.length - 1].Time) return s[s.length - 1].Value;
+    for (let i = 0; i < s.length - 1; i++) {
+      if (t >= s[i].Time && t <= s[i + 1].Time) {
+        const r = (t - s[i].Time) / (s[i + 1].Time - s[i].Time);
+        return s[i].Value + (s[i + 1].Value - s[i].Value) * r;
+      }
+    }
+    return 0;
+  }
+
+  _updatePhysics(dt) {
+    if (!this._physicsSettings || !this._physicsSettings.PhysicsSettings) return;
+    const d = Math.min(dt, 0.1);
+    for (const rig of this._physicsSettings.PhysicsSettings) {
+      if (!rig.Input) continue;
+      for (const inp of rig.Input) {
+        const id = inp.Source.Id;
+        if (!this._physicsParams[id]) {
+          this._physicsParams[id] = { value: 0, velocity: 0 };
+        }
+        const p = this._physicsParams[id];
+        p.velocity += (inp.Weight || 0) * 0.5 * d;
+        p.value += p.velocity * d;
+        p.velocity *= 0.92;
+        p.value = Math.max(-1, Math.min(1, p.value));
+        this._model.setParameterValueById(id, p.value, 0.3);
+      }
+    }
+  }
+
+  // ---- Accessors ----
+  getDrawableCount() { return this._drawableCount; }
+  getSortedDrawIndices() { return this._sortedDrawIndices; }
+  getCanvasWidth() { return this._model ? this._model.getCanvasWidth() : 1000; }
+  getCanvasHeight() { return this._model ? this._model.getCanvasHeight() : 1000; }
+  getModel() { return this._model; }
+  getTexture(index) { return this._textures[index] || null; }
+  getParameterIds() { return this._parameterIds; }
+  setParam(id, val, weight) {
+    if (this._model) this._model.setParameterValueById(id, val, weight);
+  }
+}
+
+// ---- Renderer ----
+class CubismRenderer {
+  constructor(model) {
+    this.model = model;
+    this._maskFBs = new Map(); // maskKey -> {fb, tex, w, h}
+    this._initShaders();
+  }
+
+  _initShaders() {
+    const vs = compileShader(gl.VERTEX_SHADER, VS_SRC);
+    this.progMaskSetup = linkProgram(vs, compileShader(gl.FRAGMENT_SHADER, FS_MASK_SETUP));
+    this.progMasked = linkProgram(vs, compileShader(gl.FRAGMENT_SHADER, FS_MASKED));
+    this.progMaskedInv = linkProgram(vs, compileShader(gl.FRAGMENT_SHADER, FS_MASKED_INV));
+    this.progNormal = linkProgram(vs, compileShader(gl.FRAGMENT_SHADER, FS_NORMAL));
+  }
+
+  render(projection, modelMatrix) {
+    const m = this.model.getModel();
+    if (!m) return;
+
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+
+    const sorted = this.model.getSortedDrawIndices();
+    const finalMat = mat4Mul(projection, modelMatrix);
+
+    // ---- Pass 1: Render masks to framebuffers ----
+    for (const idx of sorted) {
+      const mc = m.getDrawableMaskCounts(idx);
+      if (mc === 0) continue;
+      if (!m.getDrawableDynamicFlagIsVisible(idx)) continue;
+
+      const masks = m.getDrawableMasks(idx);
+      for (let mi = 0; mi < mc; mi++) {
+        const maskKey = masks[mi];
+        // Only render each mask once
+        if (this._maskFBs.has(maskKey)) continue;
+        // Create framebuffer for this mask
+        const fb = this._createMaskFB(1024, 1024);
+        this._maskFBs.set(maskKey, fb);
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fb.fb);
+        gl.viewport(0, 0, 1024, 1024);
+        gl.clearColor(0, 0, 0, 0);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+
+        // Render all drawables that have this maskKey
+        for (const didx of sorted) {
+          if (m.getDrawableMaskCounts(didx) === 0) continue;
+          if (!m.getDrawableDynamicFlagIsVisible(didx)) continue;
+          const dmasks = m.getDrawableMasks(didx);
+          let hasThisMask = false;
+          for (let dmi = 0; dmi < m.getDrawableMaskCounts(didx); dmi++) {
+            if (dmasks[dmi] === maskKey) { hasThisMask = true; break; }
+          }
+          if (!hasThisMask) continue;
+          this._drawDrawable(didx, finalMat, this.progMaskSetup, null, null);
+        }
+
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      }
+    }
+
+    // ---- Pass 2: Render main scene ----
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+
+    for (const idx of sorted) {
+      if (!m.getDrawableDynamicFlagIsVisible(idx)) continue;
+      const mc = m.getDrawableMaskCounts(idx);
+
+      if (mc > 0) {
+        const maskKey = m.getDrawableMasks(idx)[0];
+        const fb = this._maskFBs.get(maskKey);
+        if (!fb) continue;
+        const prog = m.getDrawableInvertedMask(idx) ? this.progMaskedInv : this.progMasked;
+        this._drawDrawable(idx, finalMat, prog, fb.tex, null);
+      } else {
+        this._drawDrawable(idx, finalMat, this.progNormal, null, null);
+      }
+    }
+
+    gl.disable(gl.BLEND);
+  }
+
+  _createMaskFB(w, h) {
+    const fb = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return { fb, tex, w, h };
+  }
+
+  _drawDrawable(idx, matrix, program, maskTex, channelFlag) {
+    const m = this.model.getModel();
+    const texIdx = m.getDrawableTextureIndex(idx);
+    const tex = this.model.getTexture(texIdx);
+    if (!tex) return;
+
+    gl.useProgram(program);
+
+    // Bind textures
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.uniform1i(gl.getUniformLocation(program, 'u_texture'), 0);
+
+    if (maskTex) {
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, maskTex);
+      gl.uniform1i(gl.getUniformLocation(program, 'u_mask'), 1);
+    }
+
+    // Channel flag
+    const cfLoc = gl.getUniformLocation(program, 'u_channelFlag');
+    if (cfLoc) gl.uniform4f(cfLoc, 1, 0, 0, 0);
+
+    // Base color (opacity)
+    const opacity = m.getDrawableOpacity(idx);
+    const bcLoc = gl.getUniformLocation(program, 'u_baseColor');
+    if (bcLoc) gl.uniform4f(bcLoc, 1, 1, 1, opacity);
+
+    // Build vertex data
+    const vc = m.getDrawableVertexCount(idx);
+    const pos = m.getDrawableVertexPositions(idx);
+    const uvs = m.getDrawableVertexUvs(idx);
+    const ic = m.getDrawableVertexIndexCount(idx);
+    const ind = m.getDrawableVertexIndices(idx);
+
+    const verts = new Float32Array(vc * 4);
+    for (let v = 0; v < vc; v++) {
+      const px = pos[v * 2], py = pos[v * 2 + 1];
+      verts[v * 4]     = matrix[0] * px + matrix[4] * py + matrix[12];
+      verts[v * 4 + 1] = matrix[1] * px + matrix[5] * py + matrix[13];
+      verts[v * 4 + 2] = uvs[v * 2];
+      verts[v * 4 + 3] = uvs[v * 2 + 1];
+    }
+
+    const vbo = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+    gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW);
+
+    const ibo = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(ind), gl.DYNAMIC_DRAW);
+
+    const aPos = gl.getAttribLocation(program, 'a_position');
+    const aTex = gl.getAttribLocation(program, 'a_texCoord');
+    gl.enableVertexAttribArray(aPos);
+    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 16, 0);
+    gl.enableVertexAttribArray(aTex);
+    gl.vertexAttribPointer(aTex, 2, gl.FLOAT, false, 16, 8);
+
+    gl.drawElements(gl.TRIANGLES, ic, gl.UNSIGNED_SHORT, 0);
+
+    gl.deleteBuffer(vbo);
+    gl.deleteBuffer(ibo);
+  }
+}
+
+// ---- App ----
+class Live2DApp {
+  constructor() {
+    this.model = new CubismModel();
+    this.renderer = null;
+    this.lastTime = performance.now() / 1000;
+    this.mx = 0; this.my = 0;
+    this.tmx = 0; this.tmy = 0;
+    this.ox = 0; this.oy = 0;
+    this.tox = 0; this.toy = 0;
+    this.scale = 1.0;
+    this.dragging = false;
+    this.dsx = 0; this.dsy = 0;
+    this.touchMoved = false;
+    this.blinkTimer = 0;
+    this.blinkPhase = 0;
+    this.blinking = false;
+    this.breathTimer = 0;
+  }
+
+  async init() {
+    try {
+      await this.model.load(MODEL_JSON);
+      this.renderer = new CubismRenderer(this.model);
+      document.getElementById('loading').classList.add('hidden');
+      this._setupInput();
+      this._loop();
+    } catch (e) {
+      console.error(e);
+      document.getElementById('loading').innerHTML =
+        '<div style="color:#ff6b6b">Failed to load<br><small>' + e.message + '</small></div>';
+    }
+  }
+
+  _setupInput() {
+    canvas.addEventListener('mousedown', e => {
+      this.dragging = true; this.dsx = e.clientX; this.dsy = e.clientY;
+    });
+    window.addEventListener('mousemove', e => {
+      this.tmx = (e.clientX / innerWidth) * 2 - 1;
+      this.tmy = (e.clientY / innerHeight) * 2 - 1;
+      if (this.dragging) {
+        this.tox += (e.clientX - this.dsx) * 0.002;
+        this.toy -= (e.clientY - this.dsy) * 0.002;
+        this.dsx = e.clientX; this.dsy = e.clientY;
+      }
+    });
+    window.addEventListener('mouseup', e => {
+      if (this.dragging && Math.abs(e.clientX - this.dsx) < 5) {
+        const dir = e.clientX > innerWidth / 2 ? 'FlickRight' : 'FlickLeft';
+        this.model.startMotion('Tap');
+      }
+      this.dragging = false;
+    });
+    canvas.addEventListener('touchstart', e => {
+      e.preventDefault();
+      this.dragging = true; this.touchMoved = false;
+      this.dsx = e.touches[0].clientX; this.dsy = e.touches[0].clientY;
+    }, { passive: false });
+    canvas.addEventListener('touchmove', e => {
+      e.preventDefault();
+      this.touchMoved = true;
+      this.tmx = (e.touches[0].clientX / innerWidth) * 2 - 1;
+      this.tmy = (e.touches[0].clientY / innerHeight) * 2 - 1;
+      if (this.dragging) {
+        this.tox += (e.touches[0].clientX - this.dsx) * 0.002;
+        this.toy -= (e.touches[0].clientY - this.dsy) * 0.002;
+        this.dsx = e.touches[0].clientX; this.dsy = e.touches[0].clientY;
+      }
+    }, { passive: false });
+    canvas.addEventListener('touchend', e => {
+      e.preventDefault();
+      if (!this.touchMoved) this.model.startMotion('Tap');
+      this.dragging = false;
+    });
+    canvas.addEventListener('wheel', e => {
+      e.preventDefault();
+      this.scale += e.deltaY * -0.001;
+      this.scale = Math.max(0.5, Math.min(2.0, this.scale));
+    }, { passive: false });
+
+    // Buttons
+    document.querySelectorAll('[data-motion]').forEach(b => {
+      b.addEventListener('click', () => this.model.startMotion(b.dataset.motion));
+    });
+    document.querySelectorAll('[data-expr]').forEach(b => {
+      b.addEventListener('click', () => this.model.setExpression(b.dataset.expr));
+    });
+    document.getElementById('btn-reset').addEventListener('click', () => {
+      this.model.resetExpression();
+      this.tox = 0; this.toy = 0; this.scale = 1.0;
+    });
+  }
+
+  _loop() {
+    requestAnimationFrame(() => this._loop());
+    const now = performance.now() / 1000;
+    const dt = Math.min(now - this.lastTime, 0.1);
+    this.lastTime = now;
+
+    // Smooth interpolation
+    this.mx += (this.tmx - this.mx) * Math.min(dt * 8, 1);
+    this.my += (this.tmy - this.my) * Math.min(dt * 8, 1);
+    this.ox += (this.tox - this.ox) * Math.min(dt * 5, 1);
+    this.oy += (this.toy - this.oy) * Math.min(dt * 5, 1);
+
+    // Auto blink
+    this.blinkTimer += dt;
+    if (this.blinking) {
+      this.blinkPhase += dt;
+      if (this.blinkPhase >= 0.15) { this.blinking = false; this.blinkPhase = 0; this.blinkTimer = 0; }
+    } else if (this.blinkTimer > 2.5 + Math.random() * 2) {
+      this.blinking = true; this.blinkPhase = 0;
+    }
+    let eye = 1;
+    if (this.blinking) eye = 1 - Math.sin(this.blinkPhase / 0.15 * Math.PI) * 0.95;
+    this.model.setParam('PARAM_EYE_L_OPEN', eye, 1);
+    this.model.setParam('PARAM_EYE_R_OPEN', eye, 1);
+
+    // Breath
+    this.breathTimer += dt;
+    this.model.setParam('PARAM_BREATH', Math.sin(this.breathTimer * 0.8) * 0.5, 1);
+
+    // Head tracking
+    this.model.setParam('PARAM_ANGLE_X', this.mx * 15, 0.5);
+    this.model.setParam('PARAM_ANGLE_Y', this.my * 10, 0.5);
+    this.model.setParam('PARAM_ANGLE_Z', this.mx * 5, 0.3);
+    this.model.setParam('PARAM_BODY_ANGLE_X', this.mx * 8, 0.3);
+    this.model.setParam('PARAM_BODY_ANGLE_Y', this.my * 5, 0.3);
+    this.model.setParam('PARAM_EYE_BALL_X', this.mx, 0.5);
+    this.model.setParam('PARAM_EYE_BALL_Y', this.my, 0.5);
+
+    this.model.update(dt);
+    this._render();
+  }
+
+  _render() {
+    const dpr = Math.min(devicePixelRatio || 1, 2);
+    const w = innerWidth, h = innerHeight;
+    if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
+      canvas.width = w * dpr; canvas.height = h * dpr;
+      canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
+    }
+
+    const mw = this.model.getCanvasWidth();
+    const mh = this.model.getCanvasHeight();
+    const sc = this.scale;
+    const proj = mat4Ortho(
+      (-mw * sc / 2 + this.ox * mw) / mw * 2,
+      (mw * sc / 2 + this.ox * mw) / mw * 2,
+      (-mh * sc / 2 + this.oy * mh) / mh * 2,
+      (mh * sc / 2 + this.oy * mh) / mh * 2,
+      -1, 1
+    );
+    const modelMat = new Float32Array([
+      2/w, 0, 0, 0,
+      0, -2/h, 0, 0,
+      0, 0, 1, 0,
+      -1, 1, 0, 1
+    ]);
+
+    this.renderer.render(proj, modelMat);
+  }
+}
+
+// ---- Boot ----
+function waitForCore() {
+  return new Promise(resolve => {
+    if (typeof Live2DCubismCore !== 'undefined') { resolve(); return; }
+    const t = setInterval(() => {
+      if (typeof Live2DCubismCore !== 'undefined') { clearInterval(t); resolve(); }
+    }, 100);
+  });
+}
+
+waitForCore().then(() => {
+  // Check WebGL
+  const testCanvas = document.createElement('canvas');
+  gl = testCanvas.getContext('webgl') || testCanvas.getContext('experimental-webgl');
+  if (!gl) {
+    document.getElementById('loading').innerHTML =
+      '<div style="color:#ff6b6b;font-size:16px;">WebGL is not supported in this browser.<br><small>Please open in a WebGL-capable browser.</small></div>';
+    return;
+  }
+  // Use the real canvas context
+  gl = canvas.getContext('webgl', { alpha: true, premultipliedAlpha: true, antialias: true });
+  if (!gl) {
+    document.getElementById('loading').innerHTML =
+      '<div style="color:#ff6b6b;font-size:16px;">WebGL context creation failed.<br><small>Please try a different browser.</small></div>';
+    return;
+  }
+  const app = new Live2DApp();
+  app.init();
+});
+</script>
+</body>
+</html>
