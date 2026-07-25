@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Live2D Viewer</title>
+  <style>
+    /* ========== 全局重置与布局 ========== */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    body {
+      display: flex;
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+    }
+
+    /* ========== 主画布区域 ========== */
+    #main-container {
+      flex: 1;
+      position: relative;
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #live2d-canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    /* ========== 加载提示 ========== */
+    #loading-overlay {
+      position: absolute;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      color: #78909c;
+      font-size: 16px;
+      pointer-events: none;
+      z-index: 10;
+    }
+    #loading-overlay.hidden { display: none; }
+
+    /* ========== 右侧日志面板 ========== */
+    #log-panel {
+      width: 320px;
+      height: 100%;
+      background: rgba(22, 33, 62, 0.95);
+      backdrop-filter: blur(10px);
+      display: flex;
+      flex-direction: column;
+      transition: width 0.3s ease;
+      overflow: hidden;
+      border-left: 1px solid rgba(74, 111, 165, 0.3);
+      flex-shrink: 0;
+    }
+    #log-panel.collapsed {
+      width: 44px;
+    }
+
+    /* ========== 日志面板头部 ========== */
+    #log-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 14px;
+      background: rgba(15, 52, 96, 0.8);
+      border-bottom: 1px solid rgba(74, 111, 165, 0.2);
+      min-height: 44px;
+      flex-shrink: 0;
+    }
+    #log-header h3 {
+      font-size: 14px;
+      font-weight: 600;
+      color: #e0e0e0;
+      white-space: nowrap;
+      letter-spacing: 0.5px;
+    }
+    #log-panel.collapsed #log-header h3 { display: none; }
+
+    #toggle-btn {
+      background: rgba(74, 111, 165, 0.2);
+      border: 1px solid rgba(74, 111, 165, 0.4);
+      color: #b0bec5;
+      cursor: pointer;
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 13px;
+      white-space: nowrap;
+      transition: background 0.2s;
+      flex-shrink: 0;
+    }
+    #toggle-btn:hover { background: rgba(74, 111, 165, 0.4); color: #e0e0e0; }
+    #log-panel.collapsed #toggle-btn { padding: 4px 6px; }
+
+    /* ========== 日志内容 ========== */
+    #log-content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px;
+      font-family: 'SF Mono', 'Cascadia Code', 'Consolas', 'Courier New', monospace;
+      font-size: 12px;
+      line-height: 1.7;
+    }
+    #log-panel.collapsed #log-content { display: none; }
+
+    /* 自定义滚动条 */
+    #log-content::-webkit-scrollbar { width: 4px; }
+    #log-content::-webkit-scrollbar-track { background: transparent; }
+    #log-content::-webkit-scrollbar-thumb { background: rgba(74, 111, 165, 0.4); border-radius: 2px; }
+
+    .log-entry { margin-bottom: 3px; word-break: break-all; }
+    .log-time { color: #546e7a; margin-right: 8px; }
+    .log-info .log-msg { color: #4fc3f7; }
+    .log-success .log-msg { color: #66bb6a; }
+    .log-warn .log-msg { color: #ffa726; }
+    .log-error .log-msg { color: #ef5350; }
+  </style>
+</head>
+<body>
+  <!-- 主画布区域 -->
+  <div id="main-container">
+    <canvas id="live2d-canvas"></canvas>
+    <div id="loading-overlay">模型加载中...</div>
+  </div>
+
+  <!-- 右侧日志面板 -->
+  <div id="log-panel">
+    <div id="log-header">
+      <h3>📋 运行日志</h3>
+      <button id="toggle-btn">◀ 收起</button>
+    </div>
+    <div id="log-content"></div>
+  </div>
+
+  <!-- ============================================ -->
+  <!-- 依赖脚本：按顺序加载 -->
+  <!-- ============================================ -->
+  <!-- 1. Cubism 4 Core -->
+  <script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
+  <!-- 2. PIXI.js v6（pixi-live2d-display v0.4.0 要求 PIXI v6） -->
+  <script src="https://cdn.jsdelivr.net/npm/pixi.js@6.5.10/dist/browser/pixi.min.js"></script>
+  <!-- 3. pixi-live2d-display (Cubism 4) -->
+  <script src="https://cdn.jsdelivr.net/npm/pixi-live2d-display@latest/dist/cubism4.min.js"></script>
+
+  <!-- ============================================ -->
+  <!-- 应用逻辑 -->
+  <!-- ============================================ -->
+  <script>
+    /* ==========================================================
+     * 模块 1：日志系统
+     * 功能：向右侧面板输出带有时间戳的日志，支持多级别
+     * ========================================================== */
+    (function() {
+      'use strict';
+
+      const MODEL_URL = 'https://cdn.jsdelivr.net/gh/Qing-Feng-123/live2Dsample@demo2/runtime/haru.model3.json';
+
+      // ---------- DOM 引用 ----------
+      const logContent = document.getElementById('log-content');
+      const logPanel = document.getElementById('log-panel');
+      const toggleBtn = document.getElementById('toggle-btn');
+      const loadingOverlay = document.getElementById('loading-overlay');
+      const canvas = document.getElementById('live2d-canvas');
+      const mainContainer = document.getElementById('main-container');
+
+      // ---------- 日志模块 ----------
+      const Logger = {
+        _log(level, cssClass, msg) {
+          const now = new Date();
+          const time = now.toLocaleTimeString('zh-CN', { hour12: false });
+          const entry = document.createElement('div');
+          entry.className = 'log-entry ' + cssClass;
+          entry.innerHTML = '<span class="log-time">[' + time + ']</span><span class="log-msg">' + msg + '</span>';
+          logContent.appendChild(entry);
+          // 自动滚动到底部，但不影响用户手动滚动历史
+          const isAtBottom = logContent.scrollHeight - logContent.scrollTop - logContent.clientHeight < 30;
+          if (isAtBottom) {
+            logContent.scrollTop = logContent.scrollHeight;
+          }
+        },
+        info(msg)  { this._log('INFO', 'log-info', msg); },
+        success(msg) { this._log('OK', 'log-success', msg); },
+        warn(msg)  { this._log('WARN', 'log-warn', msg); },
+        error(msg) { this._log('ERR', 'log-error', msg); }
+      };
+
+      // ---------- 日志面板收放 ----------
+      let panelCollapsed = false;
+      toggleBtn.addEventListener('click', function() {
+        panelCollapsed = !panelCollapsed;
+        if (panelCollapsed) {
+          logPanel.classList.add('collapsed');
+          toggleBtn.textContent = '▶';
+        } else {
+          logPanel.classList.remove('collapsed');
+          toggleBtn.textContent = '◀ 收起';
+        }
+      });
+
+      Logger.info('页面初始化完成');
+      Logger.info('模型 CDN 地址: ' + MODEL_URL);
+
+      // ==========================================================
+      // 模块 2：PIXI.js 应用初始化
+      // ==========================================================
+      Logger.info('正在初始化 PIXI.js 渲染器...');
+
+      const app = new PIXI.Application({
+        view: canvas,
+        resizeTo: mainContainer,
+        transparent: true,
+        backgroundColor: 0x000000,
+        antialias: true,
+        resolution: Math.max(window.devicePixelRatio || 1, 1),
+        autoDensity: true
+      });
+
+      Logger.success('PIXI.js 渲染器初始化成功 (v' + PIXI.VERSION + ')');
+      Logger.info('WebGL 渲染器已就绪，画布尺寸: ' + canvas.width + 'x' + canvas.height);
+
+      // ==========================================================
+      // 模块 3：Live2D 模型加载
+      // ==========================================================
+      Logger.info('正在从 jsDelivr 加载模型...');
+
+      PIXI.live2d.Live2DModel.from(MODEL_URL)
+        .then(function(model) {
+          Logger.success('模型加载成功！');
+
+          // 隐藏加载提示
+          loadingOverlay.classList.add('hidden');
+
+          // ---------- 模型缩放与定位 ----------
+          // 模型锚点居中（pixi-live2d-display 默认 anchor 为 0.5, 0.5）
+          const canvasW = canvas.width;
+          const canvasH = canvas.height;
+          const modelW = model.width;
+          const modelH = model.height;
+
+          Logger.info('模型原始尺寸: ' + Math.round(modelW) + 'x' + Math.round(modelH));
+
+          // 计算缩放比，使模型适配画布
+          const scaleX = (canvasW * 0.55) / modelW;
+          const scaleY = (canvasH * 0.75) / modelH;
+          const scale = Math.min(scaleX, scaleY);
+
+          model.scale.set(scale);
+
+          // 模型居中，底部贴近画布底部
+          model.x = canvasW / 2;
+          model.y = canvasH - (modelH * scale) / 2;
+
+          Logger.info('模型缩放比: ' + scale.toFixed(3));
+          Logger.info('模型位置: x=' + Math.round(model.x) + ', y=' + Math.round(model.y));
+
+          // 添加到舞台
+          app.stage.addChild(model);
+
+          // 自动播放 Idle 动作（如果有的话，pixi-live2d-display 会自动处理）
+          Logger.info('模型已添加到舞台，自动播放 Idle 动作');
+
+          // ---------- 模型就绪后的拖拽支持（可选，仅限站立展示） ----------
+          // 不启用拖拽，保持站立
+
+          Logger.success('Live2D 角色已就绪，正在展示站立状态');
+        })
+        .catch(function(err) {
+          Logger.error('模型加载失败: ' + (err.message || err));
+          loadingOverlay.textContent = '模型加载失败，请检查网络连接或 CDN 地址';
+          console.error('Live2D model load error:', err);
+        });
+
+      // ==========================================================
+      // 模块 4：窗口大小变化处理
+      // ==========================================================
+      window.addEventListener('resize', function() {
+        Logger.info('窗口大小已变化: ' + canvas.width + 'x' + canvas.height);
+      });
+
+      Logger.info('所有模块初始化完成，等待模型加载...');
+    })();
+  </script>
+</body>
+</html>
