@@ -1,0 +1,819 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Live2D - 桃濑日和</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: #1a1a2e; font-family: 'Segoe UI', 'PingFang SC', sans-serif; }
+#canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: block; cursor: pointer; }
+#hint {
+  position: absolute; bottom: 80px; left: 50%; transform: translateX(-50%);
+  color: rgba(255,255,255,0.6); font-size: 14px; pointer-events: none;
+  transition: opacity 0.8s; user-select: none;
+}
+
+/* ---- 日志面板 ---- */
+#log-panel {
+  position: fixed; bottom: 0; left: 0; right: 0; z-index: 100;
+  background: rgba(10,10,30,0.92); backdrop-filter: blur(6px);
+  border-top: 1px solid rgba(255,255,255,0.12);
+  font-size: 12px; color: #b0b0b0;
+  max-height: 220px; display: flex; flex-direction: column;
+  transition: max-height 0.3s ease;
+}
+#log-panel.collapsed { max-height: 32px; }
+
+#log-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 14px; cursor: pointer; user-select: none;
+  background: rgba(255,255,255,0.04); flex-shrink: 0;
+}
+#log-header:hover { background: rgba(255,255,255,0.08); }
+#log-header .title { font-weight: 600; color: #ccc; font-size: 13px; }
+#log-header .arrow { font-size: 10px; transition: transform 0.3s; color: #888; }
+#log-panel.collapsed #log-header .arrow { transform: rotate(-90deg); }
+#log-header .count { color: #4fc3f7; margin-left: 6px; font-size: 11px; }
+
+#log-body {
+  overflow-y: auto; flex: 1; padding: 4px 14px 8px;
+  font-family: 'Consolas', 'Courier New', monospace; line-height: 1.6;
+}
+#log-body::-webkit-scrollbar { width: 4px; }
+#log-body::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
+.log-line { white-space: nowrap; }
+.log-line .time { color: #666; margin-right: 8px; }
+.log-line .tag { display: inline-block; min-width: 48px; font-weight: 600; }
+.log-line .tag.info  { color: #4fc3f7; }
+.log-line .tag.ok    { color: #66bb6a; }
+.log-line .tag.warn  { color: #ffa726; }
+.log-line .tag.error { color: #ef5350; }
+.log-line .tag.motion { color: #ce93d8; }
+
+/* 提示信息淡出 */
+#hint.fade { opacity: 0; }
+</style>
+</head>
+<body>
+
+<canvas id="canvas"></canvas>
+<div id="hint">点击角色互动</div>
+
+<div id="log-panel">
+  <div id="log-header">
+    <span><span class="title">运行日志</span><span class="count" id="log-count"></span></span>
+    <span class="arrow">▼</span>
+  </div>
+  <div id="log-body"></div>
+</div>
+
+<!-- Live2D Cubism Core (WASM) -->
+<script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
+
+<script>
+// ============================================================
+//  运行日志系统
+// ============================================================
+const logBody = document.getElementById('log-body');
+const logCount = document.getElementById('log-count');
+let logLines = 0;
+
+function log(tag, msg) {
+  const now = new Date();
+  const time = now.toTimeString().slice(0,8) + '.' + String(now.getMilliseconds()).padStart(3,'0');
+  const line = document.createElement('div');
+  line.className = 'log-line';
+  line.innerHTML = `<span class="time">${time}</span><span class="tag ${tag}">[${tag.toUpperCase()}]</span>${msg}`;
+  logBody.appendChild(line);
+  logBody.scrollTop = logBody.scrollHeight;
+  logLines++;
+  logCount.textContent = `(${logLines})`;
+}
+
+// 日志面板收放
+document.getElementById('log-header').addEventListener('click', () => {
+  document.getElementById('log-panel').classList.toggle('collapsed');
+});
+
+// ============================================================
+//  CDN 基础路径
+// ============================================================
+const CDN_BASE = 'https://cdn.jsdelivr.net/gh/Qing-Feng-123/live2Dsample@demo1';
+const MODEL_BASE = CDN_BASE + '/runtime';
+
+// ============================================================
+//  Cubism Framework (最小实现)
+// ============================================================
+
+// --- 工具函数 ---
+const Utils = {
+  isClick: function(e) { return e.button === 0; },
+  createCanvas: function(w, h) {
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    return c;
+  },
+  loadFile: async function(url, type) {
+    log('info', `加载: ${url}`);
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${url}`);
+    const data = type === 'json' ? await resp.json() : await resp.arrayBuffer();
+    log('ok', `完成: ${url} (${type === 'json' ? 'JSON' : (data.byteLength/1024).toFixed(1)+'KB'})`);
+    return data;
+  }
+};
+
+// --- CubismMoc (.moc3 加载器) ---
+class CubismMoc {
+  constructor(buffer) {
+    this._moc = Live2DCubismCore.csmReviveMocInPlace(buffer, buffer.byteLength);
+    if (!this._moc) throw new Error('Moc 加载失败');
+  }
+  createModel() { return new CubismModel(this._moc); }
+  dispose() { this._moc._ptr = 0; }
+}
+
+// --- CubismModel (模型实例) ---
+class CubismModel {
+  constructor(moc) {
+    this._model = Live2DCubismCore.csmInitializeModelInPlace(moc, 0xFFFFFFFF);
+    this._parameterCount = Live2DCubismCore.csmGetParameterCount(this._model);
+    this._partCount = Live2DCubismCore.csmGetPartCount(this._model);
+    this._drawableCount = Live2DCubismCore.csmGetDrawableCount(this._model);
+
+    // 参数映射: id -> index
+    this._paramIds = [];
+    const paramIdsPtr = Live2DCubismCore.csmGetParameterIds(this._model);
+    for (let i = 0; i < this._parameterCount; i++) {
+      this._paramIds.push(Live2DCubismCore.UTF8ArrayToString(paramIdsPtr[i]));
+    }
+
+    // 部件映射
+    this._partIds = [];
+    const partIdsPtr = Live2DCubismCore.csmGetPartIds(this._model);
+    for (let i = 0; i < this._partCount; i++) {
+      this._partIds.push(Live2DCubismCore.UTF8ArrayToString(partIdsPtr[i]));
+    }
+
+    this._textures = []; // CubismTexture 数组
+    this._opacities = new Float32Array(this._drawableCount);
+    this._renderOrders = new Int32Array(this._drawableCount);
+    this._drawableMasks = new Int32Array(this._drawableCount);
+
+    // 顶点/索引缓存
+    this._vertexBuffers = [];
+    this._indexBuffers = [];
+    this._vertexCounts = [];
+    this._indexCounts = [];
+
+    this._buildDrawableData();
+  }
+
+  _buildDrawableData() {
+    const model = this._model;
+    for (let i = 0; i < this._drawableCount; i++) {
+      const vCount = Live2DCubismCore.csmGetDrawableVertexCount(model, i);
+      const vPos = Live2DCubismCore.csmGetDrawableVertexPositions(model, i);
+      const vUv  = Live2DCubismCore.csmGetDrawableVertexUvs(model, i);
+      const iCount = Live2DCubismCore.csmGetDrawableIndexCount(model, i);
+      const indices = Live2DCubismCore.csmGetDrawableIndices(model, i);
+
+      // 顶点: 位置(x,y) + UV(u,v) = 4 floats per vertex
+      const verts = new Float32Array(vCount * 4);
+      for (let v = 0; v < vCount; v++) {
+        verts[v*4]   = vPos[v*2];
+        verts[v*4+1] = vPos[v*2+1];
+        verts[v*4+2] = vUv[v*2];
+        verts[v*4+3] = vUv[v*2+1];
+      }
+      this._vertexBuffers.push(verts);
+      this._vertexCounts.push(vCount);
+
+      // 索引: 复制为 Uint16Array
+      const idxArr = new Uint16Array(iCount);
+      for (let j = 0; j < iCount; j++) idxArr[j] = indices[j];
+      this._indexBuffers.push(idxArr);
+      this._indexCounts.push(iCount);
+    }
+  }
+
+  getParamIndex(id) { return this._paramIds.indexOf(id); }
+  getPartIndex(id)  { return this._partIds.indexOf(id); }
+
+  getParamValue(idx) {
+    if (idx < 0) return 0;
+    return Live2DCubismCore.csmGetParameterValues(this._model)[idx];
+  }
+  setParamValue(idx, v) {
+    if (idx < 0) return;
+    Live2DCubismCore.csmGetParameterValues(this._model)[idx] = v;
+  }
+  addParamValue(idx, v) {
+    if (idx < 0) return;
+    Live2DCubismCore.csmGetParameterValues(this._model)[idx] += v;
+  }
+  setPartOpacity(idx, v) {
+    if (idx < 0) return;
+    Live2DCubismCore.csmGetPartOpacities(this._model)[idx] = v;
+  }
+
+  update() {
+    Live2DCubismCore.csmUpdateModel(this._model);
+    // 缓存 drawable 数据
+    for (let i = 0; i < this._drawableCount; i++) {
+      this._opacities[i] = Live2DCubismCore.csmGetDrawableOpacity(this._model, i);
+      this._renderOrders[i] = Live2DCubismCore.csmGetDrawableRenderOrder(this._model, i);
+      this._drawableMasks[i] = Live2DCubismCore.csmGetDrawableMaskCount(this._model, i);
+    }
+  }
+
+  // 获取排序后的 drawable 索引列表
+  getSortedDrawables() {
+    const indices = [];
+    for (let i = 0; i < this._drawableCount; i++) indices.push(i);
+    indices.sort((a, b) => this._renderOrders[a] - this._renderOrders[b]);
+    return indices;
+  }
+
+  getTextureIndex(drawableIdx) {
+    return Live2DCubismCore.csmGetDrawableTextureIndex(this._model, drawableIdx);
+  }
+
+  getDrawableVertexPositionsPtr(drawableIdx) {
+    return Live2DCubismCore.csmGetDrawableVertexPositions(this._model, drawableIdx);
+  }
+
+  setTexture(i, tex) { this._textures[i] = tex; }
+
+  dispose() {
+    Live2DCubismCore.csmResetMocInPlace(this._model);
+  }
+}
+
+// --- CubismMotion (动作播放) ---
+class CubismMotion {
+  constructor(json) {
+    this._curves = json.Curves || [];
+    this._meta = json.Meta || {};
+    this._duration = this._meta.Duration || 0;
+    this._fps = this._meta.Fps || 30;
+    this._loop = this._meta.Loop || false;
+    this._time = 0;
+    this._playing = false;
+  }
+
+  play() {
+    this._time = 0;
+    this._playing = true;
+  }
+
+  stop() {
+    this._playing = false;
+    this._time = 0;
+  }
+
+  get isPlaying() { return this._playing; }
+
+  update(dt, model) {
+    if (!this._playing) return;
+    this._time += dt;
+    if (this._time >= this._duration) {
+      if (this._loop) {
+        this._time = this._time % this._duration;
+      } else {
+        this._time = this._duration;
+        this._playing = false;
+      }
+    }
+    this._evaluate(model);
+  }
+
+  _evaluate(model) {
+    const t = this._time;
+    for (const curve of this._curves) {
+      if (curve.Target === 'Parameter') {
+        const idx = model.getParamIndex(curve.Id);
+        if (idx < 0) continue;
+        const val = this._evalCurve(curve.Segments, t);
+        model.setParamValue(idx, val);
+      } else if (curve.Target === 'PartOpacity') {
+        const idx = model.getPartIndex(curve.Id);
+        if (idx < 0) continue;
+        const val = this._evalCurve(curve.Segments, t);
+        model.setPartOpacity(idx, val);
+      }
+    }
+  }
+
+  _evalCurve(segments, t) {
+    // segments: [time0,val0, type1,time1,val1, type2,time2,val2, ...]
+    // type: 0=linear, 1=bezier, etc.
+    if (!segments || segments.length < 2) return 0;
+    for (let i = 0; i < segments.length - 3; i += 3) {
+      const t0 = segments[i], v0 = segments[i+1];
+      const type = segments[i+2];
+      const t1 = segments[i+3], v1 = segments[i+4];
+      if (t >= t0 && t <= t1) {
+        if (type === 0) return v0; // step
+        if (type === 1) {
+          // linear interpolation
+          const ratio = (t - t0) / (t1 - t0);
+          return v0 + (v1 - v0) * ratio;
+        }
+        // bezier: use linear fallback for simplicity
+        const ratio = (t - t0) / (t1 - t0);
+        return v0 + (v1 - v0) * ratio;
+      }
+    }
+    return segments[1]; // 默认返回第一个值
+  }
+}
+
+// --- CubismPhysics (物理模拟) ---
+class CubismPhysics {
+  constructor(json) {
+    this._json = json;
+    this._inputs = this._parseInputs();
+  }
+
+  _parseInputs() {
+    const inputs = [];
+    const settings = this._json.PhysicsSettings || [];
+    for (const s of settings) {
+      const input = (s.Input || []).map(ip => ({
+        sourceId: (ip.Source || {}).Id || '',
+        weight: ip.Weight || 0,
+        type: ip.Type || '',
+        reflect: ip.Reflect || false
+      }));
+      const output = (s.Output || []).map(op => ({
+        destId: (op.Destination || {}).Id || '',
+        weight: op.Weight || 0,
+        type: op.Type || '',
+        reflect: op.Reflect || false,
+        vertexIndex: op.VertexIndex || 0,
+        scale: op.Scale || 1
+      }));
+      const verts = (s.Vertices || []).map(v => ({
+        position: v.Position || [0,0],
+        mobility: v.Mobility || 0,
+        delay: v.Delay || 0,
+        acceleration: v.Acceleration || 0,
+        radius: v.Radius || 0
+      }));
+      inputs.push({ input, output, vertices: verts, normalization: s.Normalization || {} });
+    }
+    return inputs;
+  }
+
+  evaluate(model) {
+    for (const group of this._inputs) {
+      let totalX = 0, totalY = 0, totalAngle = 0;
+      let totalWeight = 0;
+
+      for (const ip of group.input) {
+        const idx = model.getParamIndex(ip.sourceId);
+        if (idx < 0) continue;
+        const val = model.getParamValue(idx);
+        const w = ip.weight;
+        totalWeight += Math.abs(w);
+        if (ip.type === 'X') totalX += val * w;
+        else if (ip.type === 'Y') totalY += val * w;
+        else if (ip.type === 'Angle') totalAngle += val * w;
+      }
+
+      if (totalWeight > 0) {
+        totalX /= totalWeight;
+        totalY /= totalWeight;
+        totalAngle /= totalWeight;
+      }
+
+      for (const op of group.output) {
+        const idx = model.getParamIndex(op.destId);
+        if (idx < 0) continue;
+        const scale = op.scale;
+        let val = 0;
+        if (op.type === 'X') val = totalX * scale;
+        else if (op.type === 'Y') val = totalY * scale;
+        else if (op.type === 'Angle') val = totalAngle * scale;
+        model.addParamValue(idx, val);
+      }
+    }
+  }
+}
+
+// --- CubismEyeBlink (自动眨眼) ---
+class CubismEyeBlink {
+  constructor() {
+    this._state = 0; // 0=open, 1=closing, 2=closed, 3=opening
+    this._timer = 0;
+    this._nextBlink = 2 + Math.random() * 3;
+    this._blinkDuration = 0.15;
+    this._closedDuration = 0.05;
+  }
+
+  update(dt, model) {
+    const eyeL = model.getParamIndex('ParamEyeLOpen');
+    const eyeR = model.getParamIndex('ParamEyeROpen');
+
+    this._timer += dt;
+
+    switch (this._state) {
+      case 0: // open
+        if (eyeL >= 0) model.setParamValue(eyeL, 1);
+        if (eyeR >= 0) model.setParamValue(eyeR, 1);
+        if (this._timer >= this._nextBlink) {
+          this._state = 1;
+          this._timer = 0;
+        }
+        break;
+      case 1: // closing
+        {
+          const t = Math.min(this._timer / this._blinkDuration, 1);
+          const v = 1 - t;
+          if (eyeL >= 0) model.setParamValue(eyeL, v);
+          if (eyeR >= 0) model.setParamValue(eyeR, v);
+          if (t >= 1) { this._state = 2; this._timer = 0; }
+        }
+        break;
+      case 2: // closed
+        if (eyeL >= 0) model.setParamValue(eyeL, 0);
+        if (eyeR >= 0) model.setParamValue(eyeR, 0);
+        if (this._timer >= this._closedDuration) {
+          this._state = 3;
+          this._timer = 0;
+        }
+        break;
+      case 3: // opening
+        {
+          const t = Math.min(this._timer / this._blinkDuration, 1);
+          if (eyeL >= 0) model.setParamValue(eyeL, t);
+          if (eyeR >= 0) model.setParamValue(eyeR, t);
+          if (t >= 1) {
+            this._state = 0;
+            this._timer = 0;
+            this._nextBlink = 2 + Math.random() * 3;
+          }
+        }
+        break;
+    }
+  }
+}
+
+// --- CubismBreath (呼吸) ---
+class CubismBreath {
+  constructor() { this._time = Math.random() * Math.PI * 2; }
+  update(dt, model) {
+    this._time += dt;
+    const val = Math.sin(this._time * 1.2) * 0.5;
+    const idx = model.getParamIndex('ParamBreath');
+    if (idx >= 0) model.setParamValue(idx, val);
+  }
+}
+
+// --- CubismRenderer_WebGL ---
+class CubismRenderer_WebGL {
+  constructor(gl, canvasW, canvasH) {
+    this._gl = gl;
+    this._canvasW = canvasW;
+    this._canvasH = canvasH;
+    this._shaderProgram = null;
+    this._aPosition = -1;
+    this._aTexCoord = -1;
+    this._uMatrix = null;
+    this._uTexture = null;
+    this._uBaseColor = null;
+    this._initShader();
+    this._initGL();
+  }
+
+  _initShader() {
+    const gl = this._gl;
+    const vs = gl.createShader(gl.VERTEX_SHADER);
+    gl.shaderSource(vs, `
+      attribute vec2 aPosition;
+      attribute vec2 aTexCoord;
+      varying vec2 vTexCoord;
+      uniform mat4 uMatrix;
+      void main() {
+        gl_Position = uMatrix * vec4(aPosition, 0.0, 1.0);
+        vTexCoord = aTexCoord;
+      }
+    `);
+    gl.compileShader(vs);
+
+    const fs = gl.createShader(gl.FRAGMENT_SHADER);
+    gl.shaderSource(fs, `
+      precision mediump float;
+      varying vec2 vTexCoord;
+      uniform sampler2D uTexture;
+      uniform vec4 uBaseColor;
+      void main() {
+        vec4 tex = texture2D(uTexture, vTexCoord);
+        gl_FragColor = tex * uBaseColor;
+      }
+    `);
+    gl.compileShader(fs);
+
+    const prog = gl.createProgram();
+    gl.attachShader(prog, vs);
+    gl.attachShader(prog, fs);
+    gl.linkProgram(prog);
+    this._shaderProgram = prog;
+
+    this._aPosition = gl.getAttribLocation(prog, 'aPosition');
+    this._aTexCoord = gl.getAttribLocation(prog, 'aTexCoord');
+    this._uMatrix = gl.getUniformLocation(prog, 'uMatrix');
+    this._uTexture = gl.getUniformLocation(prog, 'uTexture');
+    this._uBaseColor = gl.getUniformLocation(prog, 'uBaseColor');
+  }
+
+  _initGL() {
+    const gl = this._gl;
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.clearColor(0.1, 0.1, 0.18, 1.0);
+  }
+
+  createTexture(img) {
+    const gl = this._gl;
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    return tex;
+  }
+
+  _orthoMatrix() {
+    // 正交投影: 模型坐标原点在中心，适配屏幕
+    const w = this._canvasW, h = this._canvasH;
+    const scale = 2.0;
+    const left = -w / scale, right = w / scale;
+    const bottom = -h / scale, top = h / scale;
+    return new Float32Array([
+      2/(right-left), 0, 0, 0,
+      0, 2/(top-bottom), 0, 0,
+      0, 0, -1, 0,
+      -(right+left)/(right-left), -(top+bottom)/(top-bottom), 0, 1
+    ]);
+  }
+
+  drawModel(model) {
+    const gl = this._gl;
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.useProgram(this._shaderProgram);
+
+    const matrix = this._orthoMatrix();
+    gl.uniformMatrix4fv(this._uMatrix, false, matrix);
+
+    const sorted = model.getSortedDrawables();
+
+    for (const di of sorted) {
+      const opacity = model._opacities[di];
+      if (opacity <= 0.001) continue;
+
+      const texIdx = model.getTextureIndex(di);
+      const tex = model._textures[texIdx];
+      if (!tex) continue;
+
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.uniform1i(this._uTexture, 0);
+      gl.uniform4f(this._uBaseColor, 1, 1, 1, opacity);
+
+      // 更新顶点缓冲 (顶点位置可能因形变而改变)
+      const vCount = model._vertexCounts[di];
+      const vPosPtr = model.getDrawableVertexPositionsPtr(di);
+      const verts = model._vertexBuffers[di];
+      for (let v = 0; v < vCount; v++) {
+        verts[v*4]   = vPosPtr[v*2];
+        verts[v*4+1] = vPosPtr[v*2+1];
+      }
+
+      const vBuf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, vBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW);
+
+      gl.vertexAttribPointer(this._aPosition, 2, gl.FLOAT, false, 16, 0);
+      gl.enableVertexAttribArray(this._aPosition);
+      gl.vertexAttribPointer(this._aTexCoord, 2, gl.FLOAT, false, 16, 8);
+      gl.enableVertexAttribArray(this._aTexCoord);
+
+      const iBuf = gl.createBuffer();
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, iBuf);
+      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, model._indexBuffers[di], gl.STATIC_DRAW);
+
+      // 蒙版处理: 简单处理，有蒙版时使用反转混合
+      if (model._drawableMasks[di] > 0) {
+        gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      } else {
+        gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      }
+
+      gl.drawElements(gl.TRIANGLES, model._indexCounts[di], gl.UNSIGNED_SHORT, 0);
+
+      gl.deleteBuffer(vBuf);
+      gl.deleteBuffer(iBuf);
+    }
+  }
+
+  resize(w, h) {
+    this._canvasW = w;
+    this._canvasH = h;
+    this._gl.viewport(0, 0, w, h);
+  }
+}
+
+// ============================================================
+//  主应用
+// ============================================================
+(async function main() {
+  log('info', 'Live2D 网页启动中...');
+
+  const canvas = document.getElementById('canvas');
+  canvas.width = window.innerWidth * devicePixelRatio;
+  canvas.height = window.innerHeight * devicePixelRatio;
+  canvas.style.width = window.innerWidth + 'px';
+  canvas.style.height = window.innerHeight + 'px';
+
+  const gl = canvas.getContext('webgl', { premultipliedAlpha: true, alpha: true });
+  if (!gl) { log('error', 'WebGL 不可用'); return; }
+  log('ok', 'WebGL 上下文已创建');
+
+  // 等待 Cubism Core 就绪
+  while (typeof Live2DCubismCore === 'undefined') {
+    await new Promise(r => setTimeout(r, 50));
+  }
+  log('ok', 'Cubism Core 已就绪');
+
+  // --- 加载模型文件 ---
+  log('info', '开始加载模型文件...');
+  const [model3Json, mocBuffer, physicsJson, textureImg] = await Promise.all([
+    Utils.loadFile(`${MODEL_BASE}/hiyori_free_t08.model3.json`, 'json'),
+    Utils.loadFile(`${MODEL_BASE}/hiyori_free_t08.moc3`, 'buffer'),
+    Utils.loadFile(`${MODEL_BASE}/hiyori_free_t08.physics3.json`, 'json'),
+    new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('贴图加载失败'));
+      img.src = `${MODEL_BASE}/hiyori_free_t08.2048/texture_00.png`;
+    })
+  ]);
+  log('ok', '所有模型文件加载完成');
+
+  // --- 创建模型 ---
+  log('info', '创建模型实例...');
+  const moc = new CubismMoc(mocBuffer);
+  const model = moc.createModel();
+  log('ok', `模型已创建: ${model._parameterCount} 参数, ${model._partCount} 部件, ${model._drawableCount} 可绘制元素`);
+
+  // --- 加载动作 ---
+  const motionMap = {};
+  const motionGroups = model3Json.FileReferences?.Motions || {};
+  log('info', `加载动作组: ${Object.keys(motionGroups).join(', ')}`);
+
+  const motionPromises = [];
+  for (const [groupName, motions] of Object.entries(motionGroups)) {
+    for (const m of motions) {
+      const url = `${MODEL_BASE}/${m.File}`;
+      motionPromises.push(
+        Utils.loadFile(url, 'json').then(json => {
+          if (!motionMap[groupName]) motionMap[groupName] = [];
+          motionMap[groupName].push(new CubismMotion(json));
+        })
+      );
+    }
+  }
+  await Promise.all(motionPromises);
+  log('ok', '所有动作已加载');
+
+  // --- 设置渲染器 ---
+  const renderer = new CubismRenderer_WebGL(gl, canvas.width, canvas.height);
+  model.setTexture(0, renderer.createTexture(textureImg));
+  log('ok', '渲染器就绪');
+
+  // --- 物理模拟 ---
+  const physics = new CubismPhysics(physicsJson);
+  log('ok', '物理模拟已初始化');
+
+  // --- 眨眼 & 呼吸 ---
+  const eyeBlink = new CubismEyeBlink();
+  const breath = new CubismBreath();
+  log('ok', '自动眨眼 & 呼吸已启动');
+
+  // --- 当前动作 ---
+  let currentIdleMotion = null;
+  let tapMotion = null;
+
+  // 选择第一个 Idle 动作
+  if (motionMap['Idle'] && motionMap['Idle'].length > 0) {
+    currentIdleMotion = motionMap['Idle'][0];
+    currentIdleMotion._loop = true;
+    currentIdleMotion.play();
+    log('motion', `Idle 动作已开始 (${motionMap['Idle'].length} 个可用)`);
+  }
+
+  // 选择 Tap 动作 (点击反应)
+  if (motionMap['Tap'] && motionMap['Tap'].length > 0) {
+    tapMotion = motionMap['Tap'][0];
+    log('motion', 'Tap 动作就绪');
+  }
+
+  // --- 点击处理 ---
+  let isTapPlaying = false;
+  canvas.addEventListener('click', (e) => {
+    if (!tapMotion) return;
+    log('motion', '检测到点击，触发 Tap 动作');
+    tapMotion.play();
+    isTapPlaying = true;
+
+    // 隐藏提示
+    const hint = document.getElementById('hint');
+    if (hint && !hint.classList.contains('fade')) {
+      hint.classList.add('fade');
+    }
+  });
+
+  // --- 提示信息定时隐藏 ---
+  setTimeout(() => {
+    const hint = document.getElementById('hint');
+    if (hint) hint.classList.add('fade');
+  }, 8000);
+
+  // --- 窗口大小调整 ---
+  window.addEventListener('resize', () => {
+    canvas.width = window.innerWidth * devicePixelRatio;
+    canvas.height = window.innerHeight * devicePixelRatio;
+    canvas.style.width = window.innerWidth + 'px';
+    canvas.style.height = window.innerHeight + 'px';
+    renderer.resize(canvas.width, canvas.height);
+  });
+
+  // --- 主循环 ---
+  let lastTime = performance.now();
+  let frameCount = 0;
+  let fpsTime = 0;
+
+  function loop(now) {
+    requestAnimationFrame(loop);
+
+    let dt = (now - lastTime) / 1000;
+    lastTime = now;
+    if (dt > 0.1) dt = 0.1; // 防止大帧跳跃
+
+    // 重置参数 (为 Idle 动作准备)
+    // 先更新 Idle
+    if (currentIdleMotion && !isTapPlaying) {
+      currentIdleMotion.update(dt, model);
+    }
+
+    // Tap 动作
+    if (tapMotion && tapMotion.isPlaying) {
+      tapMotion.update(dt, model);
+      if (!tapMotion.isPlaying) {
+        isTapPlaying = false;
+        log('motion', 'Tap 动作播放完毕');
+        // 重新开始 Idle
+        if (currentIdleMotion) { currentIdleMotion.play(); }
+      }
+    }
+
+    // 物理模拟
+    physics.evaluate(model);
+
+    // 眨眼 & 呼吸
+    eyeBlink.update(dt, model);
+    breath.update(dt, model);
+
+    // 更新模型
+    model.update();
+
+    // 渲染
+    renderer.drawModel(model);
+
+    // FPS 统计
+    frameCount++;
+    fpsTime += dt;
+    if (fpsTime >= 3) {
+      const fps = Math.round(frameCount / fpsTime);
+      log('info', `FPS: ${fps}`);
+      frameCount = 0;
+      fpsTime = 0;
+    }
+  }
+
+  log('ok', '初始化完成，开始渲染循环');
+  log('info', '点击角色即可触发互动动作');
+  requestAnimationFrame(loop);
+})().catch(err => {
+  log('error', `启动失败: ${err.message}`);
+  console.error(err);
+});
+</script>
+</body>
+</html>
