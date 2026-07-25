@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live2D Haru Viewer</title>
+    <style>
+        /* ==========================================
+           Block 1: HTML 结构 + CSS 样式
+           ========================================== */
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+        }
+
+        /* ---------- Canvas 容器 ---------- */
+        #canvas-container {
+            width: 100%;
+            height: 100%;
+            position: relative;
+        }
+
+        #live2d-canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        /* ---------- 加载提示 ---------- */
+        #loading {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: rgba(255,255,255,0.8);
+            font-size: 16px;
+            z-index: 50;
+            text-align: center;
+            pointer-events: none;
+            transition: opacity 0.3s;
+        }
+        #loading.hidden { opacity: 0; }
+
+        /* ---------- 日志面板 ---------- */
+        #log-panel {
+            position: fixed;
+            top: 0; right: 0;
+            width: 340px;
+            height: 100%;
+            background: rgba(20, 20, 35, 0.96);
+            color: #d0d0d0;
+            display: flex;
+            flex-direction: column;
+            transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+            z-index: 100;
+            box-shadow: -4px 0 24px rgba(0,0,0,0.4);
+            border-left: 1px solid rgba(255,255,255,0.06);
+        }
+
+        #log-panel.collapsed {
+            transform: translateX(340px);
+        }
+
+        /* 日志面板头部 */
+        #log-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 14px 16px;
+            background: rgba(30, 30, 50, 0.98);
+            border-bottom: 1px solid rgba(255,255,255,0.08);
+            flex-shrink: 0;
+        }
+
+        #log-header span {
+            font-size: 13px;
+            font-weight: 600;
+            color: #8b9cf7;
+            letter-spacing: 0.5px;
+        }
+
+        #log-toggle {
+            background: rgba(255,255,255,0.08);
+            border: 1px solid rgba(255,255,255,0.15);
+            color: #bbb;
+            padding: 5px 14px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            transition: all 0.2s;
+        }
+
+        #log-toggle:hover {
+            background: rgba(255,255,255,0.15);
+            color: #fff;
+        }
+
+        /* 日志内容区 */
+        #log-content {
+            flex: 1;
+            overflow-y: auto;
+            padding: 10px 14px;
+            font-size: 11.5px;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            line-height: 1.65;
+        }
+
+        #log-content::-webkit-scrollbar {
+            width: 5px;
+        }
+        #log-content::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        #log-content::-webkit-scrollbar-thumb {
+            background: rgba(255,255,255,0.12);
+            border-radius: 3px;
+        }
+        #log-content::-webkit-scrollbar-thumb:hover {
+            background: rgba(255,255,255,0.2);
+        }
+
+        .log-entry {
+            padding: 3px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.02);
+            word-break: break-all;
+            animation: fadeIn 0.15s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateX(8px); }
+            to   { opacity: 1; transform: translateX(0); }
+        }
+
+        .log-info    { color: #8ab4f8; }
+        .log-warn    { color: #fdd835; }
+        .log-error   { color: #ff6b6b; }
+        .log-success { color: #69f0ae; }
+        .log-debug   { color: #888; }
+
+        /* 日志面板折叠后的标签 */
+        #log-tab {
+            position: fixed;
+            top: 50%;
+            right: 0;
+            transform: translateY(-50%);
+            background: rgba(20, 20, 35, 0.96);
+            color: #8b9cf7;
+            padding: 14px 7px;
+            border-radius: 8px 0 0 8px;
+            cursor: pointer;
+            font-size: 12px;
+            writing-mode: vertical-rl;
+            letter-spacing: 2px;
+            z-index: 99;
+            display: none;
+            box-shadow: -2px 0 12px rgba(0,0,0,0.35);
+            border: 1px solid rgba(255,255,255,0.06);
+            border-right: none;
+            user-select: none;
+            transition: background 0.2s;
+        }
+        #log-tab:hover {
+            background: rgba(40, 40, 60, 0.96);
+        }
+        #log-panel.collapsed ~ #log-tab {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container">
+        <canvas id="live2d-canvas"></canvas>
+    </div>
+
+    <div id="loading">正在加载模型...</div>
+
+    <!-- 日志面板 -->
+    <div id="log-panel">
+        <div id="log-header">
+            <span>运行日志</span>
+            <button id="log-toggle">收起</button>
+        </div>
+        <div id="log-content"></div>
+    </div>
+    <div id="log-tab">运行日志</div>
+
+    <!-- ==========================================
+         依赖库 (CDN)
+         ========================================== -->
+    <!-- Cubism Core (官方) -->
+    <script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
+    <!-- PIXI.js v7 -->
+    <script src="https://cdn.jsdelivr.net/npm/pixi.js@7.4.3/dist/pixi.min.js"></script>
+    <!-- pixi-live2d-display (Cubism 4) -->
+    <script src="https://cdn.jsdelivr.net/npm/pixi-live2d-display/dist/cubism4.min.js"></script>
+
+    <script>
+    // ==========================================
+    // Block 2: Logger 日志模块
+    // ==========================================
+    class Logger {
+        constructor(containerId) {
+            this.container = document.getElementById(containerId);
+            this.maxEntries = 500;
+            this._userScrolledUp = false;
+
+            this.container.addEventListener('scroll', () => {
+                const el = this.container;
+                this._userScrolledUp = (el.scrollTop + el.clientHeight) < (el.scrollHeight - 40);
+            });
+        }
+
+        _format(level, message) {
+            const now = new Date();
+            const time = now.toLocaleTimeString('zh-CN', { hour12: false });
+            const ms = String(now.getMilliseconds()).padStart(3, '0');
+            return `[${time}.${ms}] [${level}] ${message}`;
+        }
+
+        _add(level, message) {
+            const entry = document.createElement('div');
+            entry.className = `log-entry log-${level}`;
+            entry.textContent = this._format(level.toUpperCase(), message);
+            this.container.appendChild(entry);
+
+            // 限制日志条数
+            while (this.container.children.length > this.maxEntries) {
+                this.container.removeChild(this.container.firstChild);
+            }
+
+            // 自动滚动（用户未手动上滚时）
+            if (!this._userScrolledUp) {
+                this.container.scrollTop = this.container.scrollHeight;
+            }
+        }
+
+        info(msg)    { this._add('info', msg); }
+        warn(msg)    { this._add('warn', msg); }
+        error(msg)   { this._add('error', msg); }
+        success(msg) { this._add('success', msg); }
+        debug(msg)   { this._add('debug', msg); }
+    }
+
+    // ==========================================
+    // Block 3: 日志面板 收放控制
+    // ==========================================
+    function setupLogPanel() {
+        const panel  = document.getElementById('log-panel');
+        const toggle = document.getElementById('log-toggle');
+        const tab    = document.getElementById('log-tab');
+
+        let collapsed = false;
+
+        function collapse() {
+            panel.classList.add('collapsed');
+            toggle.textContent = '展开';
+            collapsed = true;
+        }
+
+        function expand() {
+            panel.classList.remove('collapsed');
+            toggle.textContent = '收起';
+            collapsed = false;
+        }
+
+        toggle.addEventListener('click', () => collapsed ? expand() : collapse());
+        tab.addEventListener('click', expand);
+    }
+
+    // ==========================================
+    // Block 4: Live2D 应用核心
+    // ==========================================
+    class Live2DApp {
+        constructor(canvasId, logger) {
+            this.canvas    = document.getElementById(canvasId);
+            this.container = this.canvas.parentElement;
+            this.logger    = logger;
+            this.app       = null;
+            this.model     = null;
+            this._resizeTimer = null;
+        }
+
+        async init() {
+            this.logger.info('========== Live2D 初始化开始 ==========');
+            this.logger.debug(`浏览器: ${navigator.userAgent.substring(0, 60)}...`);
+
+            // 检查 WebGL 支持
+            if (!this._checkWebGL()) {
+                this.logger.error('WebGL 不可用，无法渲染 Live2D 模型');
+                document.getElementById('loading').textContent = '错误: 浏览器不支持 WebGL';
+                return;
+            }
+
+            // 创建 PIXI Application
+            this.logger.info('正在创建 PIXI Application...');
+            try {
+                this.app = new PIXI.Application({
+                    view: this.canvas,
+                    backgroundAlpha: 0,
+                    resizeTo: this.container,
+                    antialias: true,
+                    resolution: Math.min(window.devicePixelRatio || 1, 2),
+                    autoDensity: true,
+                });
+                this.logger.success('PIXI Application 创建完成');
+            } catch (err) {
+                this.logger.error(`PIXI 初始化失败: ${err.message}`);
+                throw err;
+            }
+
+            // 加载模型
+            await this.loadModel();
+
+            // 监听窗口尺寸变化
+            window.addEventListener('resize', () => this._onResize());
+            this._onResize();
+
+            this.logger.success('========== Live2D 初始化完成 ==========');
+        }
+
+        _checkWebGL() {
+            const canvas = document.createElement('canvas');
+            const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+            if (!gl) {
+                return false;
+            }
+            this.logger.debug(`WebGL: ${gl.getParameter(gl.RENDERER)}`);
+            return true;
+        }
+
+        async loadModel() {
+            const MODEL_BASE = 'https://cdn.jsdelivr.net/gh/Qing-Feng-123/live2Dsample@demo2/runtime/';
+            const modelUrl   = MODEL_BASE + 'haru.model3.json';
+
+            this.logger.info(`模型源: ${MODEL_BASE}`);
+            this.logger.info(`正在加载模型配置: haru.model3.json`);
+
+            const loadStart = performance.now();
+
+            try {
+                // Live2DModel.from 会自动加载 model3.json 及所有关联资源
+                // (moc3, textures, physics, motions, expressions...)
+                this.model = await PIXI.live2d.Live2DModel.from(modelUrl, {
+                    autoInteract: false,   // 不需要交互
+                });
+
+                const loadTime = ((performance.now() - loadStart) / 1000).toFixed(2);
+                this.logger.success(`模型加载完成 (耗时 ${loadTime}s)`);
+
+                // 将模型添加到舞台
+                this.app.stage.addChild(this.model);
+                this.logger.info('模型已添加到舞台');
+
+                // 隐藏加载提示
+                document.getElementById('loading').classList.add('hidden');
+
+                // 输出模型基本信息
+                this.logger.debug(`模型尺寸: ${this.model.width} x ${this.model.height}`);
+                this.logger.debug(`模型内部: ${this.model.internalModel ? 'OK' : 'N/A'}`);
+            } catch (error) {
+                this.logger.error(`模型加载失败: ${error.message}`);
+                console.error('Live2D load error:', error);
+                document.getElementById('loading').textContent = '加载失败: ' + error.message;
+                throw error;
+            }
+        }
+
+        _onResize() {
+            // 防抖
+            if (this._resizeTimer) clearTimeout(this._resizeTimer);
+            this._resizeTimer = setTimeout(() => this.fitModel(), 100);
+        }
+
+        fitModel() {
+            if (!this.model) return;
+
+            const w = this.container.clientWidth;
+            const h = this.container.clientHeight;
+
+            // 模型原始尺寸
+            const modelW = this.model.width  || 1000;
+            const modelH = this.model.height || 1200;
+
+            // 按比例缩放，留 15% 边距
+            const scale = Math.min(w / modelW, h / modelH) * 0.85;
+            this.model.scale.set(scale);
+
+            // 居中
+            this.model.x = w / 2;
+            this.model.y = h / 2;
+
+            // 锚点居中（如果支持）
+            if (this.model.anchor) {
+                this.model.anchor.set(0.5, 0.5);
+            }
+
+            // 只在尺寸变化较大时打印日志
+            this.logger.debug(`视口: ${w}x${h}, 缩放: ${scale.toFixed(3)}`);
+        }
+    }
+
+    // ==========================================
+    // Block 5: 主入口
+    // ==========================================
+    async function main() {
+        // 初始化日志面板
+        setupLogPanel();
+
+        const logger = new Logger('log-content');
+        logger.info('页面加载完成');
+
+        // 检查依赖是否加载成功
+        if (typeof PIXI === 'undefined') {
+            logger.error('PIXI.js 未加载，请检查网络连接');
+            document.getElementById('loading').textContent = '错误: PIXI.js 加载失败';
+            return;
+        }
+        if (typeof Live2DCubismCore === 'undefined') {
+            logger.error('Cubism Core 未加载，请检查网络连接');
+            document.getElementById('loading').textContent = '错误: Cubism Core 加载失败';
+            return;
+        }
+        logger.success('依赖库加载完成 (PIXI.js + Cubism Core + pixi-live2d-display)');
+
+        // 启动应用
+        const app = new Live2DApp('live2d-canvas', logger);
+        try {
+            await app.init();
+        } catch (error) {
+            logger.error(`初始化异常: ${error.message}`);
+        }
+    }
+
+    // DOM 加载完成后启动
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', main);
+    } else {
+        main();
+    }
+    </script>
+</body>
+</html>
