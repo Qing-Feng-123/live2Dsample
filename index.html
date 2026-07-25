@@ -1,0 +1,847 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Live2D 角色展示</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      background: #1a1a2e;
+      font-family: 'Segoe UI', 'PingFang SC', sans-serif;
+      display: flex;
+    }
+
+    /* ========== 主舞台区域 ========== */
+    .stage-wrapper {
+      flex: 1;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 0;
+    }
+
+    #live2d-canvas {
+      display: block;
+      max-width: 100%;
+      max-height: 100%;
+    }
+
+    /* 加载提示 */
+    .loading-overlay {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: rgba(255,255,255,0.6);
+      font-size: 18px;
+      pointer-events: none;
+      transition: opacity 0.5s;
+    }
+    .loading-overlay.hidden {
+      opacity: 0;
+    }
+
+    /* ========== 右侧日志面板 ========== */
+    .log-panel {
+      width: 340px;
+      height: 100vh;
+      background: #16213e;
+      border-left: 1px solid #0f3460;
+      display: flex;
+      flex-direction: column;
+      transition: width 0.3s ease, opacity 0.3s ease;
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+    .log-panel.collapsed {
+      width: 40px;
+    }
+
+    .log-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 16px;
+      background: #0f3460;
+      color: #e0e0e0;
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      flex-shrink: 0;
+      cursor: pointer;
+      user-select: none;
+      white-space: nowrap;
+    }
+    .log-panel.collapsed .log-header {
+      justify-content: center;
+      padding: 12px 0;
+    }
+
+    .log-header .title-text {
+      transition: opacity 0.2s;
+    }
+    .log-panel.collapsed .title-text {
+      opacity: 0;
+      width: 0;
+      overflow: hidden;
+    }
+
+    .log-toggle-btn {
+      background: none;
+      border: 1px solid rgba(255,255,255,0.3);
+      color: #e0e0e0;
+      width: 28px;
+      height: 28px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transition: background 0.2s;
+    }
+    .log-toggle-btn:hover {
+      background: rgba(255,255,255,0.1);
+    }
+
+    .log-status {
+      font-size: 11px;
+      color: #4ecca3;
+      margin-left: 8px;
+      white-space: nowrap;
+    }
+    .log-panel.collapsed .log-status {
+      display: none;
+    }
+
+    .log-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px;
+      font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+      font-size: 12px;
+      line-height: 1.7;
+      color: #b0b0b0;
+      transition: opacity 0.2s;
+    }
+    .log-panel.collapsed .log-body {
+      opacity: 0;
+      padding: 0;
+    }
+
+    .log-body .log-entry {
+      padding: 2px 0;
+      border-bottom: 1px solid rgba(255,255,255,0.03);
+      word-break: break-all;
+    }
+    .log-body .log-entry.info  { color: #b0b0b0; }
+    .log-body .log-entry.warn  { color: #f0a500; }
+    .log-body .log-entry.error { color: #e84545; }
+    .log-body .log-entry.ok    { color: #4ecca3; }
+
+    .log-body::-webkit-scrollbar {
+      width: 4px;
+    }
+    .log-body::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    .log-body::-webkit-scrollbar-thumb {
+      background: #0f3460;
+      border-radius: 2px;
+    }
+
+    /* 折叠状态下的垂直文字 */
+    .log-panel.collapsed .vertical-label {
+      display: block;
+    }
+    .vertical-label {
+      display: none;
+      writing-mode: vertical-rl;
+      text-orientation: mixed;
+      color: #e0e0e0;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 2px;
+      padding: 16px 0;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ========== 主舞台 ========== -->
+  <div class="stage-wrapper">
+    <canvas id="live2d-canvas"></canvas>
+    <div class="loading-overlay" id="loading-overlay">模型加载中...</div>
+  </div>
+
+  <!-- ========== 右侧日志面板 ========== -->
+  <div class="log-panel" id="log-panel">
+    <div class="log-header" id="log-header">
+      <span class="title-text">运行日志</span>
+      <span class="log-status" id="log-status">● 就绪</span>
+      <span class="vertical-label">日志</span>
+      <button class="log-toggle-btn" id="log-toggle-btn" title="收起/展开日志">◀</button>
+    </div>
+    <div class="log-body" id="log-body"></div>
+  </div>
+
+  <!-- ========== 日志面板交互脚本 ========== -->
+  <script>
+    (function() {
+      var panel   = document.getElementById('log-panel');
+      var header  = document.getElementById('log-header');
+      var btn     = document.getElementById('log-toggle-btn');
+      var body    = document.getElementById('log-body');
+      var status  = document.getElementById('log-status');
+
+      var collapsed = false;
+
+      function toggle() {
+        collapsed = !collapsed;
+        if (collapsed) {
+          panel.classList.add('collapsed');
+          btn.textContent = '▶';
+        } else {
+          panel.classList.remove('collapsed');
+          btn.textContent = '◀';
+        }
+      }
+
+      btn.addEventListener('click', function(e) {
+        e.stopPropagation();
+        toggle();
+      });
+      header.addEventListener('click', toggle);
+
+      /* ========== 日志系统 ========== */
+      window.Logger = {
+        _el: body,
+        _statusEl: status,
+        _count: 0,
+        _log: function(level, msg) {
+          var time = new Date().toLocaleTimeString();
+          var text = '[' + time + '] ' + msg;
+          console.log('[' + level + '] ' + text);
+
+          var entry = document.createElement('div');
+          entry.className = 'log-entry ' + level;
+          entry.textContent = text;
+          this._el.appendChild(entry);
+
+          // 保持滚动在底部（不影响用户向上翻阅历史）
+          var atBottom = this._el.scrollHeight - this._el.scrollTop - this._el.clientHeight < 30;
+          if (atBottom) {
+            this._el.scrollTop = this._el.scrollHeight;
+          }
+
+          this._count++;
+          if (level === 'error') {
+            this._statusEl.textContent = '● 错误';
+            this._statusEl.style.color = '#e84545';
+          } else if (level === 'warn') {
+            this._statusEl.textContent = '● 警告';
+            this._statusEl.style.color = '#f0a500';
+          }
+        },
+        info:  function(msg) { this._log('info', msg); },
+        warn:  function(msg) { this._log('warn', msg); },
+        error: function(msg) { this._log('error', msg); },
+        ok:    function(msg) { this._log('ok', msg); },
+        setStatus: function(text, color) {
+          this._statusEl.textContent = text;
+          if (color) this._statusEl.style.color = color;
+        }
+      };
+
+      Logger.info('页面初始化完成');
+      Logger.info('日志面板就绪');
+    })();
+  </script>
+
+  <!-- ========== Live2D Cubism SDK CDN ========== -->
+  <!-- Core: 官方 CDN -->
+  <script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
+  <!-- Framework: 社区预编译 bundle（含完整 Cubism 4 Framework 类） -->
+  <script src="https://cdn.jsdelivr.net/gh/kem198/practice-live2d-cubism-sdk-for-web@main/CubismSdkForWeb-4-r.7/Samples/TypeScript/Demo/dist/bundle.js"></script>
+
+  <!-- ========== Live2D 应用逻辑 ========== -->
+  <script>
+  (function() {
+    'use strict';
+
+    // ================================================================
+    // 配置
+    // ================================================================
+    var MODEL_BASE_URL = 'https://cdn.jsdelivr.net/gh/Qing-Feng-123/live2Dsample@demo1/runtime/';
+    var MODEL_NAME     = 'hiyori_free_t08';
+    var CanvasSize     = 'auto'; // 固定画布尺寸: 'auto' | {width, height}
+
+    Logger.info('SDK 加载完成，开始初始化 Live2D 应用');
+
+    // ================================================================
+    // 引用 SDK 命名空间
+    // ================================================================
+    var CubismFramework        = Live2DCubismFramework.CubismFramework;
+    var CubismUserModel        = Live2DCubismFramework.CubismUserModel;
+    var CubismMoc              = Live2DCubismFramework.CubismMoc;
+    var CubismModelSettingJson = Live2DCubismFramework.CubismModelSettingJson;
+    var CubismRenderer_WebGL   = Live2DCubismFramework.CubismRenderer_WebGL;
+    var CubismPhysics          = Live2DCubismFramework.CubismPhysics;
+    var CubismEyeBlink         = Live2DCubismFramework.CubismEyeBlink;
+    var CubismBreath           = Live2DCubismFramework.CubismBreath;
+    var CubismPose             = Live2DCubismFramework.CubismPose;
+    var CubismMotion           = Live2DCubismFramework.CubismMotion;
+    var CubismMotionQueueManager = Live2DCubismFramework.CubismMotionQueueManager;
+    var CubismMatrix44         = Live2DCubismFramework.CubismMatrix44;
+    var BreathParameterData    = Live2DCubismFramework.BreathParameterData;
+    var LogLevel               = Live2DCubismFramework.LogLevel;
+
+    if (!CubismFramework) {
+      Logger.error('Live2D Cubism Framework 加载失败，请检查 CDN 连接');
+      return;
+    }
+    Logger.ok('CubismFramework 已就绪');
+
+    // ================================================================
+    // LAppPal - 平台抽象层
+    // ================================================================
+    var LAppPal = {
+      _lastTime: 0,
+      _deltaTime: 0,
+      _firstUpdate: true,
+
+      updateTime: function() {
+        var now = performance.now();
+        if (this._firstUpdate) {
+          this._deltaTime = 1.0 / 60.0;
+          this._lastTime = now;
+          this._firstUpdate = false;
+        } else {
+          this._deltaTime = (now - this._lastTime) / 1000;
+          this._lastTime = now;
+        }
+      },
+
+      getDeltaTime: function() {
+        return this._deltaTime;
+      },
+
+      printMessage: function(msg) {
+        // SDK 内部日志，根据需要输出
+        if (msg && msg.indexOf('[Live2D]') === 0) {
+          Logger.info('SDK: ' + msg);
+        }
+      },
+
+      loadFileAsBytes: function(path, callback) {
+        Logger.info('加载: ' + path.substring(path.lastIndexOf('/') + 1));
+        fetch(path)
+          .then(function(response) {
+            if (!response.ok) {
+              throw new Error('HTTP ' + response.status);
+            }
+            return response.arrayBuffer();
+          })
+          .then(function(buffer) {
+            callback(buffer, buffer.byteLength);
+          })
+          .catch(function(err) {
+            Logger.error('文件加载失败: ' + path.substring(path.lastIndexOf('/') + 1) + ' - ' + err.message);
+            callback(null, 0);
+          });
+      },
+
+      /** 获取当前 shared GL context */
+      _gl: null,
+      getGl: function() { return this._gl; }
+    };
+
+    // ================================================================
+    // LAppModel - 模型包装类
+    // ================================================================
+    function LAppModel() {
+      CubismUserModel.call(this);
+      this._modelSetting  = null;
+      this._modelHomeDir  = '';
+      this._userEyeBlink  = null;
+      this._userBreath    = null;
+      this._motionPaths   = {};
+      this._initialized   = false;
+    }
+
+    LAppModel.prototype = Object.create(CubismUserModel.prototype);
+    LAppModel.prototype.constructor = LAppModel;
+
+    /**
+     * 加载模型全部资源
+     */
+    LAppModel.prototype.loadAssets = function(modelHomeDir, modelSettingPath) {
+      var self = this;
+      this._modelHomeDir = modelHomeDir;
+
+      return new Promise(function(resolve, reject) {
+        var settingPath = modelHomeDir + modelSettingPath;
+
+        // 第一步：加载 model3.json
+        LAppPal.loadFileAsBytes(settingPath, function(settingBytes, size) {
+          if (!settingBytes) {
+            reject(new Error('无法加载 model3.json'));
+            return;
+          }
+
+          self._modelSetting = new CubismModelSettingJson(settingBytes, size);
+          Logger.ok('model3.json 解析成功');
+
+          // 第二步：加载 .moc3 并创建模型
+          var mocPath = modelHomeDir + self._modelSetting.getModelFileName();
+          LAppPal.loadFileAsBytes(mocPath, function(mocBytes) {
+            if (!mocBytes) {
+              reject(new Error('无法加载 .moc3'));
+              return;
+            }
+
+            var moc = CubismMoc.create(mocBytes, mocBytes.byteLength);
+            if (!moc) {
+              reject(new Error('CubismMoc.create 失败'));
+              return;
+            }
+
+            // 创建渲染器并关联 WebGL 上下文
+            self.createRenderer();
+            var gl = LAppPal.getGl();
+            self._renderer.startUp(gl);
+
+            // 设置模型（替代 setupModel，因为 bundle 中未导出此方法）
+            self._model = moc.createModel();
+            self._model.saveParameters();
+
+            // 初始化渲染器
+            var textureCount = self._modelSetting.getTextureCount();
+            self._renderer.initialize(self._model, textureCount);
+
+            Logger.ok('Moc3 模型创建成功');
+
+            // 第三步：加载纹理
+            self._loadTextures(modelHomeDir)
+              .then(function() {
+                Logger.ok('纹理加载完成');
+
+                // 第四步：加载物理 & 姿势
+                self._loadPhysics(modelHomeDir);
+                self._loadPose(modelHomeDir);
+
+                // 第五步：设置表情组件
+                self._setupEyeBlink();
+                self._setupBreath();
+
+                // 第六步：记录动作路径
+                self._loadMotionPaths(modelHomeDir);
+
+                self._initialized = true;
+                Logger.ok('模型 ' + MODEL_NAME + ' 初始化完成');
+                resolve();
+              })
+              .catch(reject);
+          });
+        });
+      });
+    };
+
+    LAppModel.prototype._loadTextures = function(modelHomeDir) {
+      var self = this;
+      var textureCount = this._modelSetting.getTextureCount();
+      var promises = [];
+
+      for (var i = 0; i < textureCount; i++) {
+        (function(index) {
+          var texPath = modelHomeDir + self._modelSetting.getTextureFileName(index);
+          var promise = new Promise(function(resolve, reject) {
+            var img = new Image();
+            img.crossOrigin = 'Anonymous';
+            img.onload = function() {
+              var gl = LAppPal.getGl();
+              var tex = gl.createTexture();
+              gl.bindTexture(gl.TEXTURE_2D, tex);
+              gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+              gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+              gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+              gl.generateMipmap(gl.TEXTURE_2D);
+              self.getRenderer().bindTexture(index, tex);
+              Logger.info('纹理 ' + (index + 1) + '/' + textureCount + ' 加载完成');
+              resolve();
+            };
+            img.onerror = function() {
+              Logger.error('纹理加载失败: ' + texPath);
+              reject(new Error('纹理加载失败'));
+            };
+            img.src = texPath;
+          });
+          promises.push(promise);
+        })(i);
+      }
+      return Promise.all(promises);
+    };
+
+    LAppModel.prototype._loadPhysics = function(modelHomeDir) {
+      var physicsPath = this._modelSetting.getPhysicsFileName();
+      if (!physicsPath) { return; }
+      var self = this;
+      LAppPal.loadFileAsBytes(modelHomeDir + physicsPath, function(bytes) {
+        if (!bytes) { return; }
+        self._physics = CubismPhysics.create(bytes, bytes.byteLength);
+        Logger.ok('物理效果加载成功');
+      });
+    };
+
+    LAppModel.prototype._loadPose = function(modelHomeDir) {
+      var posePath = this._modelSetting.getPoseFileName();
+      if (!posePath) { return; }
+      var self = this;
+      LAppPal.loadFileAsBytes(modelHomeDir + posePath, function(bytes) {
+        if (!bytes) { return; }
+        self._pose = CubismPose.create(bytes, bytes.byteLength);
+        Logger.ok('姿势配置加载成功');
+      });
+    };
+
+    LAppModel.prototype._setupEyeBlink = function() {
+      if (this._modelSetting.getEyeBlinkParameterCount() > 0) {
+        this._userEyeBlink = CubismEyeBlink.create(this._modelSetting);
+        Logger.ok('眨眼效果已设置');
+      }
+    };
+
+    LAppModel.prototype._setupBreath = function() {
+      this._userBreath = CubismBreath.create();
+      var breathParams = BreathParameterData.create(this._modelSetting);
+      if (breathParams) {
+        this._userBreath.setParameters(breathParams);
+      }
+      Logger.ok('呼吸效果已设置');
+    };
+
+    LAppModel.prototype._loadMotionPaths = function(modelHomeDir) {
+      var groupCount = this._modelSetting.getMotionGroupCount();
+      for (var i = 0; i < groupCount; i++) {
+        var groupName = this._modelSetting.getMotionGroupName(i);
+        var count = this._modelSetting.getMotionCount(groupName);
+        this._motionPaths[groupName] = [];
+        for (var j = 0; j < count; j++) {
+          this._motionPaths[groupName].push(
+            modelHomeDir + this._modelSetting.getMotionFileName(groupName, j)
+          );
+        }
+      }
+      Logger.ok('动作配置加载完成 (共 ' + groupCount + ' 组)');
+    };
+
+    /**
+     * 启动 Idle 动作
+     */
+    LAppModel.prototype.startIdleMotion = function() {
+      var paths = this._motionPaths['Idle'];
+      if (!paths || paths.length === 0) {
+        Logger.info('无 Idle 动作组');
+        return;
+      }
+      var self = this;
+      LAppPal.loadFileAsBytes(paths[0], function(bytes) {
+        if (!bytes) { return; }
+        var motion = CubismMotion.create(bytes, bytes.byteLength);
+        if (motion) {
+          var blinkIds = self._userEyeBlink
+            ? self._userEyeBlink.getParameterIds()
+            : null;
+          motion.setEffectIds(blinkIds, self._lipSyncIds);
+          self.getMotionQueueManager().startMotion(motion, false, performance.now());
+          Logger.ok('Idle 动作已启动');
+        }
+      });
+    };
+
+    /**
+     * 每帧更新模型
+     */
+    LAppModel.prototype.update = function() {
+      var dt = LAppPal.getDeltaTime();
+      if (dt > 0.1) dt = 0.1; // 防止大帧跳跃
+
+      var model = this._model;
+      if (!model) return;
+
+      // 更新动作队列
+      this.getMotionQueueManager().doUpdateMotion(model, dt);
+
+      model.saveParameters();
+
+      // 物理
+      if (this._physics) {
+        this._physics.evaluate(model, dt);
+      }
+
+      // 姿势
+      if (this._pose) {
+        this._pose.updateParameters(model, dt);
+      }
+
+      model.update();
+      model.loadParameters();
+
+      // 眨眼
+      if (this._userEyeBlink) {
+        this._userEyeBlink.updateParameters(model, dt);
+      }
+
+      // 呼吸
+      if (this._userBreath) {
+        this._userBreath.updateParameters(model, dt);
+      }
+    };
+
+    /**
+     * 绘制模型
+     */
+    LAppModel.prototype.draw = function(matrix) {
+      if (this._model && this._renderer) {
+        this._renderer.setMvpMatrix(matrix);
+        this._renderer.drawModel();
+      }
+    };
+
+    // ================================================================
+    // LAppLive2DManager - 模型管理器
+    // ================================================================
+    var LAppLive2DManager = {
+      _models: [],
+
+      initialize: function() {
+        this._models = [];
+        Logger.info('Live2DManager 初始化完成');
+      },
+
+      createModel: function() {
+        var model = new LAppModel();
+        model.loadAssets(MODEL_BASE_URL, MODEL_NAME + '.model3.json')
+          .then(function() {
+            Logger.ok('模型创建成功');
+            model.startIdleMotion();
+          })
+          .catch(function(err) {
+            Logger.error('模型创建失败: ' + err.message);
+          });
+        this._models.push(model);
+        return model;
+      },
+
+      onUpdate: function(w, h) {
+        for (var i = 0; i < this._models.length; i++) {
+          this._models[i].update();
+        }
+
+        // 投影矩阵：使用 CubismMatrix44 标准方式
+        // scale(1.0, aspect) 让模型按画布宽高比正确缩放居中
+        var projection = new CubismMatrix44();
+        projection.scale(1.0, w / h);
+
+        return projection;
+      }
+    };
+
+    // ================================================================
+    // LAppView - 视图管理
+    // ================================================================
+    var LAppView = {
+      _canvas: null,
+      _gl: null,
+
+      initialize: function(canvas) {
+        this._canvas = canvas;
+
+        // 获取 WebGL 上下文
+        var gl = canvas.getContext('webgl', {
+          alpha: true,
+          premultipliedAlpha: true,
+          antialias: true
+        });
+        if (!gl) {
+          gl = canvas.getContext('experimental-webgl', {
+            alpha: true,
+            premultipliedAlpha: true
+          });
+        }
+        if (!gl) {
+          Logger.error('WebGL 不可用');
+          return;
+        }
+        this._gl = gl;
+        LAppPal._gl = gl;
+        Logger.ok('WebGL 上下文已创建');
+      },
+
+      render: function() {
+        if (!this._gl) return;
+
+        var models = LAppLive2DManager._models;
+        if (models.length === 0) return;
+
+        var model = models[0];
+        if (!model._initialized) return;
+
+        var gl = this._gl;
+        var w = this._canvas.width;
+        var h = this._canvas.height;
+
+        gl.viewport(0, 0, w, h);
+        gl.clearColor(0.0, 0.0, 0.0, 0.0);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+
+        var projection = LAppLive2DManager.onUpdate(w, h);
+        model.draw(projection);
+      }
+    };
+
+    // ================================================================
+    // LAppDelegate - 主应用代理
+    // ================================================================
+    var LAppDelegate = {
+      _canvas: null,
+      _running: false,
+      _initialized: false,
+
+      initialize: function() {
+        this._canvas = document.getElementById('live2d-canvas');
+
+        // 设置 canvas 尺寸
+        this.resizeCanvas();
+
+        // 初始化 Cubism Framework（如果尚未被 bundle 初始化）
+        try {
+          if (!CubismFramework.isStarted || !CubismFramework.isStarted()) {
+            CubismFramework.startUp({
+              logFunction: LAppPal.printMessage.bind(LAppPal),
+              loggingLevel: LogLevel.LogLevel_Verbose
+            });
+            CubismFramework.initialize();
+            Logger.ok('CubismFramework 初始化完成');
+          } else {
+            Logger.info('CubismFramework 已由 bundle 初始化，跳过');
+          }
+        } catch (e) {
+          // fallback: 尝试直接初始化
+          Logger.warn('isStarted 检查失败，尝试直接初始化');
+          try {
+            CubismFramework.startUp({
+              logFunction: LAppPal.printMessage.bind(LAppPal),
+              loggingLevel: LogLevel.LogLevel_Verbose
+            });
+            CubismFramework.initialize();
+            Logger.ok('CubismFramework 初始化完成（fallback）');
+          } catch (e2) {
+            Logger.warn('CubismFramework 可能已初始化: ' + e2.message);
+          }
+        }
+
+        // 初始化视图
+        LAppView.initialize(this._canvas);
+
+        // 初始化模型管理器并创建模型
+        LAppLive2DManager.initialize();
+        LAppLive2DManager.createModel();
+
+        this._initialized = true;
+        Logger.ok('LAppDelegate 初始化完成');
+      },
+
+      resizeCanvas: function() {
+        var dpr = window.devicePixelRatio || 1;
+        var wrapper = this._canvas.parentElement;
+        var w = wrapper.clientWidth;
+        var h = wrapper.clientHeight;
+
+        this._canvas.width  = w * dpr;
+        this._canvas.height = h * dpr;
+        this._canvas.style.width  = w + 'px';
+        this._canvas.style.height = h + 'px';
+
+        Logger.info('Canvas 尺寸: ' + this._canvas.width + 'x' + this._canvas.height);
+      },
+
+      run: function() {
+        var self = this;
+        this._running = true;
+
+        function loop() {
+          if (!self._running) return;
+          LAppPal.updateTime();
+          LAppView.render();
+          requestAnimationFrame(loop);
+        }
+
+        loop();
+        Logger.ok('渲染循环已启动');
+      },
+
+      release: function() {
+        this._running = false;
+      }
+    };
+
+    // ================================================================
+    // 启动应用
+    // ================================================================
+    function startApp() {
+      Logger.info('启动 Live2D 应用');
+
+      try {
+        LAppDelegate.initialize();
+      } catch (e) {
+        Logger.error('初始化异常: ' + e.message);
+        return;
+      }
+
+      LAppDelegate.run();
+
+      // 隐藏加载提示
+      setTimeout(function() {
+        var overlay = document.getElementById('loading-overlay');
+        if (overlay) {
+          overlay.classList.add('hidden');
+          setTimeout(function() { overlay.remove(); }, 500);
+        }
+      }, 2000);
+
+      Logger.setStatus('● 运行中', '#4ecca3');
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', startApp);
+    } else {
+      startApp();
+    }
+
+    // 窗口大小改变时调整 canvas
+    window.addEventListener('resize', function() {
+      if (LAppDelegate._initialized) {
+        LAppDelegate.resizeCanvas();
+      }
+    });
+
+    Logger.info('Live2D 应用脚本加载完成，等待 DOM 就绪...');
+  })();
+  </script>
+
+</body>
+</html>
