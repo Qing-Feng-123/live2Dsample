@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Live2D 模型展示</title>
+
+  <!-- 1. Live2D Cubism Core -->
+  <script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
+  <!-- 2. PIXI.js v6 - 与 pixi-live2d-display v0.4.0 最佳兼容 -->
+  <script src="https://cdn.jsdelivr.net/npm/pixi.js@6.5.10/dist/browser/pixi.min.js"></script>
+  <!-- 3. pixi-live2d-display (Cubism 4) 原版 -->
+  <script src="https://cdn.jsdelivr.net/npm/pixi-live2d-display@0.4.0/dist/cubism4.min.js"></script>
+
+  <style>
+    /* ========================================
+       全局重置与基础样式
+       ======================================== */
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #1a1a2e;
+      font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+    }
+
+    /* ========================================
+       Canvas 容器 - 占据全屏
+       ======================================== */
+    #canvas-container {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 1;
+    }
+
+    #canvas-container canvas {
+      display: block;
+    }
+
+    /* ========================================
+       加载提示
+       ======================================== */
+    #loading-hint {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: #666;
+      font-size: 16px;
+      z-index: 2;
+      pointer-events: none;
+      transition: opacity 0.5s;
+    }
+
+    /* ========================================
+       日志面板切换按钮
+       ======================================== */
+    #log-toggle {
+      position: fixed;
+      top: 50%;
+      right: 0;
+      transform: translateY(-50%);
+      width: 28px;
+      height: 80px;
+      background: #2d2d44;
+      color: #aaa;
+      border: 1px solid #444;
+      border-right: none;
+      border-radius: 6px 0 0 6px;
+      cursor: pointer;
+      z-index: 100;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      user-select: none;
+      transition: background 0.2s;
+    }
+
+    #log-toggle:hover {
+      background: #3d3d5c;
+      color: #fff;
+    }
+
+    /* ========================================
+       日志面板主体
+       ======================================== */
+    #log-panel {
+      position: fixed;
+      top: 0;
+      right: 0;
+      width: 340px;
+      height: 100vh;
+      background: rgba(10, 10, 24, 0.96);
+      border-left: 1px solid #333;
+      z-index: 99;
+      transform: translateX(100%);
+      transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      display: flex;
+      flex-direction: column;
+      backdrop-filter: blur(8px);
+    }
+
+    #log-panel.open {
+      transform: translateX(0);
+    }
+
+    #log-panel.open ~ #log-toggle {
+      right: 340px;
+      transition: right 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    /* 日志面板头部 */
+    #log-header {
+      padding: 14px 16px;
+      background: #141428;
+      border-bottom: 1px solid #2a2a40;
+      color: #88ccff;
+      font-size: 14px;
+      font-weight: bold;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+
+    #log-header .dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #4caf50;
+      margin-right: 8px;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    #log-clear {
+      background: none;
+      border: 1px solid #444;
+      color: #888;
+      padding: 2px 8px;
+      border-radius: 3px;
+      cursor: pointer;
+      font-size: 11px;
+      font-family: inherit;
+    }
+
+    #log-clear:hover {
+      color: #fff;
+      border-color: #666;
+    }
+
+    /* 日志内容区域 */
+    #log-content {
+      flex: 1;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 8px 0;
+    }
+
+    #log-content::-webkit-scrollbar {
+      width: 4px;
+    }
+
+    #log-content::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    #log-content::-webkit-scrollbar-thumb {
+      background: #333;
+      border-radius: 2px;
+    }
+
+    /* 日志条目 */
+    .log-entry {
+      padding: 5px 14px;
+      font-size: 12px;
+      line-height: 1.5;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+      color: #aaa;
+      word-break: break-all;
+      animation: fadeIn 0.2s ease;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(-4px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .log-entry .time {
+      color: #555;
+      margin-right: 8px;
+      white-space: nowrap;
+    }
+
+    .log-entry.info  { color: #88cc88; }
+    .log-entry.warn  { color: #ddcc88; }
+    .log-entry.error { color: #ee8888; }
+    .log-entry.debug { color: #8888cc; }
+    .log-entry.success { color: #4caf50; font-weight: bold; }
+  </style>
+</head>
+<body>
+
+  <!-- Canvas 容器 -->
+  <div id="canvas-container"></div>
+
+  <!-- 加载提示 -->
+  <div id="loading-hint">正在加载模型...</div>
+
+  <!-- 日志面板 -->
+  <div id="log-panel">
+    <div id="log-header">
+      <span><span class="dot"></span>运行日志</span>
+      <button id="log-clear" title="清空日志">清空</button>
+    </div>
+    <div id="log-content"></div>
+  </div>
+
+  <!-- 日志面板切换按钮（必须在 panel 之后，CSS ~ 选择器才能生效） -->
+  <div id="log-toggle">日 志</div>
+
+  <script>
+  (function() {
+    'use strict';
+
+    /* ========================================
+       第一块：日志系统
+       ======================================== */
+    const logContent = document.getElementById('log-content');
+    const logPanel   = document.getElementById('log-panel');
+    const logToggle  = document.getElementById('log-toggle');
+    const logClear   = document.getElementById('log-clear');
+    const loadingHint = document.getElementById('loading-hint');
+
+    /**
+     * 写入运行日志
+     * @param {string} msg   - 日志内容
+     * @param {string} level - 日志级别: info | warn | error | debug | success
+     */
+    function log(msg, level) {
+      level = level || 'info';
+      var now = new Date();
+      var time = now.toLocaleTimeString('zh-CN', { hour12: false });
+      var entry = document.createElement('div');
+      entry.className = 'log-entry ' + level;
+      entry.innerHTML = '<span class="time">[' + time + ']</span>' + msg;
+      logContent.appendChild(entry);
+      // 保持滚动在最底部
+      logContent.scrollTop = logContent.scrollHeight;
+      console.log('[' + level.toUpperCase() + '] ' + msg);
+    }
+
+    // 日志面板切换
+    logToggle.addEventListener('click', function() {
+      logPanel.classList.toggle('open');
+    });
+
+    // 清空日志
+    logClear.addEventListener('click', function() {
+      logContent.innerHTML = '';
+      log('日志已清空', 'debug');
+    });
+
+    // 验证：日志系统就绪
+    log('日志系统初始化完成', 'success');
+
+
+    /* ========================================
+       第二块：Live2D 模型加载与渲染
+       ======================================== */
+
+    // 模型地址（jsDelivr CDN）
+    var MODEL_URL = 'https://cdn.jsdelivr.net/gh/Qing-Feng-123/live2Dsample@demo1/runtime/hiyori_free_t08.model3.json';
+
+    // 验证依赖是否加载
+    if (typeof PIXI === 'undefined') {
+      log('PIXI.js 未加载，请检查网络连接', 'error');
+      loadingHint.textContent = 'PIXI.js 加载失败，请检查网络';
+      return;
+    }
+    log('PIXI.js 版本: ' + PIXI.VERSION, 'info');
+
+    // pixi-live2d-display v0.4.0 需要 window.PIXI 来获取 Ticker
+    window.PIXI = PIXI;
+
+    if (typeof Live2DCubismCore === 'undefined') {
+      log('Live2D Cubism Core 未加载，请检查网络连接', 'error');
+      loadingHint.textContent = 'Cubism Core 加载失败，请检查网络';
+      return;
+    }
+    log('Live2D Cubism Core 就绪', 'info');
+
+    if (!PIXI.live2d || !PIXI.live2d.Live2DModel) {
+      log('pixi-live2d-display 未正确加载', 'error');
+      loadingHint.textContent = 'pixi-live2d-display 加载失败';
+      return;
+    }
+    log('pixi-live2d-display (Cubism 4) 就绪', 'info');
+
+    // 检测 WebGL 支持
+    var testCanvas = document.createElement('canvas');
+    var testGl = testCanvas.getContext('webgl') || testCanvas.getContext('experimental-webgl');
+    if (!testGl) {
+      log('浏览器不支持 WebGL，无法渲染 Live2D 模型', 'error');
+      loadingHint.textContent = '浏览器不支持 WebGL';
+      return;
+    }
+    log('WebGL 支持就绪', 'debug');
+
+    // 创建 PIXI Application
+    var app;
+    try {
+      app = new PIXI.Application({
+        width: window.innerWidth,
+        height: window.innerHeight,
+        backgroundColor: 0x1a1a2e,
+        antialias: true,
+        resolution: window.devicePixelRatio || 1,
+        autoDensity: true,
+      });
+    } catch (e) {
+      log('PIXI Application 创建失败: ' + e.message, 'error');
+      loadingHint.textContent = '渲染器初始化失败: ' + e.message;
+      return;
+    }
+
+    document.getElementById('canvas-container').appendChild(app.view);
+    log('PIXI Application 创建成功', 'success');
+
+    // 加载模型
+    log('开始加载模型: hiyori_free_t08', 'info');
+    log('模型路径: ' + MODEL_URL, 'debug');
+
+    PIXI.live2d.Live2DModel.from(MODEL_URL).then(function(model) {
+      log('模型加载成功!', 'success');
+
+      // 添加到舞台
+      app.stage.addChild(model);
+      log('模型已添加到舞台', 'info');
+
+      // 居中定位
+      model.anchor.set(0.5, 0.5);
+      model.x = app.screen.width / 2;
+      model.y = app.screen.height / 2;
+
+      // 根据画布尺寸计算缩放比例
+      var modelW = model.width  || 800;
+      var modelH = model.height || 1000;
+      var scaleX = app.screen.width  / modelW;
+      var scaleY = app.screen.height / modelH;
+      var scale  = Math.min(scaleX, scaleY) * 0.75;
+      model.scale.set(scale);
+
+      log('模型原始尺寸: ' + modelW.toFixed(0) + 'x' + modelH.toFixed(0), 'debug');
+      log('画布尺寸: ' + app.screen.width + 'x' + app.screen.height, 'debug');
+      log('缩放比例: ' + scale.toFixed(3), 'debug');
+      log('模型位置: (' + model.x.toFixed(0) + ', ' + model.y.toFixed(0) + ')', 'debug');
+
+      // 隐藏加载提示
+      loadingHint.style.opacity = '0';
+      setTimeout(function() { loadingHint.style.display = 'none'; }, 500);
+
+      log('初始化完成! 模型已就绪', 'success');
+
+      // 窗口大小变化时重新调整
+      window.addEventListener('resize', function() {
+        app.renderer.resize(window.innerWidth, window.innerHeight);
+        model.x = app.screen.width / 2;
+        model.y = app.screen.height / 2;
+        var mW = model.width  || 800;
+        var mH = model.height || 1000;
+        var sX = app.screen.width  / mW;
+        var sY = app.screen.height / mH;
+        var s  = Math.min(sX, sY) * 0.75;
+        model.scale.set(s);
+        log('窗口调整: ' + app.screen.width + 'x' + app.screen.height + ', 缩放: ' + s.toFixed(3), 'debug');
+      });
+
+    }).catch(function(err) {
+      log('模型加载失败: ' + err.message, 'error');
+      console.error(err);
+      loadingHint.textContent = '模型加载失败: ' + err.message;
+      loadingHint.style.color = '#ee8888';
+    });
+
+    // 全局错误捕获
+    window.addEventListener('error', function(e) {
+      log('运行错误: ' + e.message + ' (来源: ' + (e.filename || 'unknown') + ')', 'error');
+    });
+
+  })();
+  </script>
+</body>
+</html>
